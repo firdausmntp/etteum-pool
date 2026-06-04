@@ -314,8 +314,8 @@ class QoderProviderAdapter(ProviderAdapter):
         await next_year_btn.click()
         await asyncio.sleep(0.3)
 
-        # Pick day 28 (safe for all months)
-        day_cells = page.locator("td").filter(has_text=re.compile(r"^28$"))
+        # Pick day 1 (safe for all months)
+        day_cells = page.locator("td").filter(has_text=re.compile(r"^1$"))
         for i in range(await day_cells.count()):
             cell = day_cells.nth(i)
             if await cell.evaluate("el => !el.classList.contains('disabled') && getComputedStyle(el).pointerEvents !== 'none'"):
