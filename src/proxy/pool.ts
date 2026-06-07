@@ -146,6 +146,57 @@ class AccountPool {
     return Number(account?.quotaRemaining || 0);
   }
 
+  /**
+   * Check and reset daily quota for Qoder accounts.
+   * - If quotaLimit === 0: initialize with dailyLimit
+   * - If quotaResetAt has passed: reset quotaRemaining to dailyLimit, set quotaResetAt to next midnight
+   * - Reactivates exhausted accounts after reset (unless server-side rate limited)
+   */
+  async checkAndResetDailyQuota(accountId: number, dailyLimit: number): Promise<number> {
+    const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
+    if (!account) return 0;
+
+    const now = new Date();
+    const resetAt = account.quotaResetAt ? new Date(account.quotaResetAt) : null;
+    const currentLimit = Number(account.quotaLimit || 0);
+
+    // Check if account is server-side rate limited (exhausted within last 24 hours)
+    const updatedAt = account.updatedAt ? new Date(account.updatedAt) : null;
+    const hoursSinceUpdate = updatedAt ? (now.getTime() - updatedAt.getTime()) / (1000 * 60 * 60) : Infinity;
+    const isServerRateLimited = account.status === "exhausted" && hoursSinceUpdate < 24;
+
+    // Initialize or reset if:
+    // 1. quotaLimit === 0 (first time setup)
+    // 2. quotaResetAt has passed (daily reset) AND not server-side rate limited
+    if (currentLimit === 0 || (!isServerRateLimited && (!resetAt || now >= resetAt))) {
+      // Set next reset to tomorrow midnight
+      const nextReset = new Date(now);
+      nextReset.setDate(nextReset.getDate() + 1);
+      nextReset.setHours(0, 0, 0, 0);
+
+      const [updated] = await db.update(accounts)
+        .set({
+          quotaLimit: dailyLimit,
+          quotaRemaining: dailyLimit,
+          quotaResetAt: nextReset,
+          status: "active", // Reactivate if was exhausted
+          updatedAt: now,
+        })
+        .where(eq(accounts.id, accountId))
+        .returning({ quotaRemaining: accounts.quotaRemaining });
+
+      this.invalidate(account.provider as ProviderName);
+      broadcast({
+        type: "account_status",
+        data: { id: accountId, status: "active", provider: account.provider, quotaReset: true },
+      });
+
+      return Number(updated?.quotaRemaining || dailyLimit);
+    }
+
+    return Number(account.quotaRemaining || 0);
+  }
+
   private async getActiveAccounts(provider: ProviderName): Promise<Account[]> {
     const ttlMs = Math.max(0, config.accountCacheTtlMs);
     if (ttlMs === 0) return this.fetchActiveAccounts(provider);
@@ -227,13 +278,14 @@ class AccountPool {
   }
 
   /**
-   * Mark an account as exhausted
+   * Mark an account as exhausted (also zeroes out quota remaining)
    */
   async markExhausted(accountId: number): Promise<void> {
     const [account] = await db
       .update(accounts)
       .set({
         status: "exhausted",
+        quotaRemaining: 0,
         updatedAt: new Date(),
       })
       .where(eq(accounts.id, accountId))

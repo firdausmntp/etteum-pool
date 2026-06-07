@@ -64,14 +64,23 @@ export function mapHealthToAccountUpdate(account: Account, health: ProviderHealt
   let status: AccountStatus = account.status;
   let errorMessage: string | null = account.errorMessage || null;
 
+  // Qoder: skip status updates to preserve custom daily credit system (200 req/day)
+  // Only allow warmup to update status if account is in error state (session expired, etc)
+  const skipStatusUpdate = account.provider === "qoder" &&
+    (account.status === "exhausted" || account.status === "active");
+
   switch (health.kind) {
     case "healthy":
-      status = "active";
-      errorMessage = null;
+      if (!skipStatusUpdate) {
+        status = "active";
+        errorMessage = null;
+      }
       break;
     case "exhausted":
-      status = "exhausted";
-      errorMessage = "Quota exhausted";
+      if (!skipStatusUpdate) {
+        status = "exhausted";
+        errorMessage = "Quota exhausted";
+      }
       break;
     case "banned":
       status = "error";
@@ -105,16 +114,19 @@ export function mapHealthToAccountUpdate(account: Account, health: ProviderHealt
     metadata: mergeWarmupMetadata(account, health),
   };
 
-  if (health.quota) {
-    update.quotaLimit = Number(health.quota.limit || 0);
-    update.quotaRemaining = Math.max(0, Number(health.quota.remaining || 0));
-    if (health.kind === "exhausted") update.quotaRemaining = 0;
-    if (health.quota.resetAt) {
-      const resetAt = new Date(health.quota.resetAt);
-      if (!Number.isNaN(resetAt.getTime())) update.quotaResetAt = resetAt;
+  // Qoder: skip quota updates to preserve custom daily credit system (200 req/day)
+  if (account.provider !== "qoder") {
+    if (health.quota) {
+      update.quotaLimit = Number(health.quota.limit || 0);
+      update.quotaRemaining = Math.max(0, Number(health.quota.remaining || 0));
+      if (health.kind === "exhausted") update.quotaRemaining = 0;
+      if (health.quota.resetAt) {
+        const resetAt = new Date(health.quota.resetAt);
+        if (!Number.isNaN(resetAt.getTime())) update.quotaResetAt = resetAt;
+      }
+    } else if (health.kind === "exhausted") {
+      update.quotaRemaining = 0;
     }
-  } else if (health.kind === "exhausted") {
-    update.quotaRemaining = 0;
   }
 
   if (health.tokens) update.tokens = health.tokens;

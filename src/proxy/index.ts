@@ -274,6 +274,7 @@ function wrapStreamWithUsageFinalizer(
   let totalTokens = 0;
   let upstreamCredits = 0;
   let finalized = false;
+  let streamError = false;
 
   const observe = (chunk: Uint8Array) => {
     buffer += decoder.decode(chunk, { stream: true });
@@ -285,11 +286,33 @@ function wrapStreamWithUsageFinalizer(
       if (!trimmed.startsWith("data:")) continue;
       const payload = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed.slice(5);
 
+      // Detect upstream errors in SSE stream (Qoder 403 in body, OpenAI error format)
+      const trimmedPayload = payload.trim();
+      if (trimmedPayload && trimmedPayload !== "[DONE]") {
+        try {
+          const parsed = JSON.parse(trimmedPayload);
+          // Qoder upstream error: { type: "upstream_error", error: "message" }
+          if (parsed.type === "upstream_error") {
+            streamError = true;
+          }
+          // Qoder format: {"code":"112","statusCodeValue":403,"message":"..."}
+          if (parsed.statusCodeValue && parsed.statusCodeValue >= 400) {
+            streamError = true;
+          }
+          // OpenAI format: {"error": {"message": "...", "type": "..."}}
+          if (parsed.error && (typeof parsed.error === "object" || typeof parsed.error === "string")) {
+            streamError = true;
+          }
+        } catch {
+          // not JSON, skip
+        }
+      }
+
       // Always extract content for estimation, even if no usage field
-      const content = extractStreamContent(payload.trim());
+      const content = extractStreamContent(trimmedPayload);
       if (content) streamedContent += content;
 
-      const usage = extractUsageFromSsePayload(payload.trim());
+      const usage = extractUsageFromSsePayload(trimmedPayload);
       if (!usage) continue;
       promptTokens = usage.promptTokens || promptTokens;
       completionTokens = usage.completionTokens || completionTokens;
@@ -316,9 +339,37 @@ function wrapStreamWithUsageFinalizer(
 
     void (async () => {
       try {
+        const isQoder = context.provider === "qoder";
+
+        // If stream had upstream error (403 rate limit, empty stream, etc), don't decrement quota
+        // and mark account exhausted for Qoder
+        if (streamError) {
+          if (isQoder) {
+            await pool.markExhausted(context.accountId);
+          }
+          // Still update request log with error status
+          if (context.logId) {
+            await db
+              .update(requestLogs)
+              .set({
+                status: "error",
+                errorMessage: "Upstream rate limit or quota exceeded",
+                durationMs,
+              })
+              .where(eq(requestLogs.id, context.logId));
+          }
+          return;
+        }
+
+        const creditsToDecrement = isQoder ? 1 : creditsUsed;
         const quotaAfter = context.quotaBefore > 0
-          ? await pool.decrementQuota(context.accountId, creditsUsed)
+          ? await pool.decrementQuota(context.accountId, creditsToDecrement)
           : 0;
+
+        // Qoder: mark exhausted when quota hits 0
+        if (isQoder && quotaAfter === 0 && context.quotaBefore > 0) {
+          await pool.markExhausted(context.accountId);
+        }
 
         if (context.logId) {
           await db
@@ -431,12 +482,23 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
     result.creditSource
   );
 
-    const quotaBefore = Number(account.quotaRemaining || 0);
+    // Qoder: check daily quota reset and use 1 credit per request
+    const isQoder = provider === "qoder";
+    const quotaBefore = isQoder
+      ? await pool.checkAndResetDailyQuota(account.id, 200)
+      : Number(account.quotaRemaining || 0);
+
+    const creditsToDecrement = isQoder ? 1 : creditsUsed;
     const quotaAfter = isStream
       ? quotaBefore
       : quotaBefore > 0
-        ? await pool.decrementQuota(account.id, creditsUsed)
+        ? await pool.decrementQuota(account.id, creditsToDecrement)
         : 0;
+
+    // Qoder: mark exhausted when quota hits 0
+    if (isQoder && !isStream && quotaAfter === 0 && quotaBefore > 0) {
+      await pool.markExhausted(account.id);
+    }
 
   const logEntry = {
     accountId: account.id,

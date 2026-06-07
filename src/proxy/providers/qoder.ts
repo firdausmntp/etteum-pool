@@ -860,8 +860,11 @@ export class QoderProvider extends BaseProvider {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
     }
 
-    if (resp.status === 401 || resp.status === 403) {
-      return { success: false, error: `expired: HTTP ${resp.status}` };
+    if (resp.status === 401) {
+      return { success: false, error: `expired: HTTP 401` };
+    }
+    if (resp.status === 403) {
+      return { success: false, error: "Rate limited or quota exceeded", quotaExhausted: true };
     }
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -966,9 +969,9 @@ export class QoderProvider extends BaseProvider {
                       }
                       const fullErr = `Qoder HTTP ${svc} ${errStatus}: ${errMsg.slice(0, 200) || "rate limited or quota exceeded"}`;
                       console.error(`[Qoder] ${fullErr}`);
-                      // Emit error to client and stop stream
+                      // Send error signal to stream, finalizer will detect and mark exhausted
                       try {
-                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: fullErr, type: "upstream_error" } })}\n\n`));
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "upstream_error", error: fullErr })}\n\n`));
                         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                       } catch {}
                       streamActive = false;
