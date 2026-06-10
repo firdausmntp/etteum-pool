@@ -19,7 +19,8 @@ export interface AnthropicMessagesRequest {
   stream?: boolean;
   tools?: any[];
   tool_choice?: any;
-  thinking?: { type: string; budget_tokens?: number };
+  thinking?: { type: string; budget_tokens?: number; display?: string; effort?: string; summary?: string };
+  effort?: string;
 }
 
 function contentToText(content: string | AnthropicContentBlock[] | undefined): string {
@@ -130,6 +131,7 @@ export function anthropicToOpenAI(body: AnthropicMessagesRequest): ChatCompletio
     stream: body.stream,
     ...(tools ? { tools } : {}),
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
+    ...(body.effort ? { reasoning_effort: body.effort } : {}),
     ...(body.thinking ? { thinking: body.thinking } : {}),
   };
 }
@@ -137,8 +139,12 @@ export function anthropicToOpenAI(body: AnthropicMessagesRequest): ChatCompletio
 export function openAIToAnthropic(response: any, request: AnthropicMessagesRequest) {
   const choice = response?.choices?.[0];
   const text = choice?.message?.content || "";
+  const reasoning = choice?.message?.reasoning_content || "";
   const toolCalls = choice?.message?.tool_calls || [];
   const content = [];
+  if (reasoning) {
+    content.push({ type: "thinking", thinking: reasoning, signature: "poolprox_unsigned_reasoning_summary" });
+  }
   if (text) content.push({ type: "text", text });
   for (const call of toolCalls) {
     let input = call?.function?.arguments || {};
@@ -173,6 +179,7 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
   let blockIndex = -1;
   let textBlockOpen = false;
   let thinkingBlockOpen = false;
+  let thinkingSignatureSent = false;
   const toolBlocks = new Map<number, number>();
   const closedToolBlocks = new Set<number>();
   let stopReason = "end_turn";
@@ -215,9 +222,21 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
     return encoder.encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
+  function dataPayload(block: string): string | null {
+    const lines = block
+      .split("\n")
+      .filter((line) => line.startsWith("data:"));
+    if (lines.length === 0) return null;
+    return lines
+      .map((line) => line.startsWith("data: ") ? line.slice(6) : line.slice(5))
+      .join("\n")
+      .trim();
+  }
+
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const reader = stream.getReader();
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
 
       const startMessage = () => {
         if (started) return;
@@ -240,7 +259,7 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
       const ensureTextBlock = () => {
         if (textBlockOpen) return;
         if (thinkingBlockOpen) {
-          controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: blockIndex }));
+          closeThinkingBlock();
           thinkingBlockOpen = false;
         }
         blockIndex += 1;
@@ -252,8 +271,31 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
         }));
       };
 
+      const closeThinkingBlock = () => {
+        if (!thinkingBlockOpen) return;
+        if (!thinkingSignatureSent) {
+          controller.enqueue(event("content_block_delta", {
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "signature_delta", signature: "poolprox_unsigned_reasoning_summary" },
+          }));
+          thinkingSignatureSent = true;
+        }
+        controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: blockIndex }));
+        thinkingBlockOpen = false;
+      };
+
       try {
         startMessage();
+        heartbeat = setInterval(() => {
+          try {
+            controller.enqueue(event("ping", { type: "ping" }));
+          } catch {
+            if (heartbeat) clearInterval(heartbeat);
+            heartbeat = null;
+          }
+        }, 10_000);
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -262,12 +304,21 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
           buffer = parts.pop() || "";
 
           for (const part of parts) {
-            const dataLine = part.split("\n").find((line) => line.startsWith("data: "));
-            if (!dataLine) continue;
-            const payload = dataLine.slice(6).trim();
+            const payload = dataPayload(part);
+            if (!payload) continue;
             if (payload === "[DONE]") continue;
             try {
               const chunk = JSON.parse(payload);
+              if (chunk?.error) {
+                const message = typeof chunk.error === "string"
+                  ? chunk.error
+                  : chunk.error.message || "Upstream stream error";
+                controller.enqueue(event("error", {
+                  type: "error",
+                  error: { type: "api_error", message },
+                }));
+                continue;
+              }
               const finishReason = chunk?.choices?.[0]?.finish_reason;
               const delta = chunk?.choices?.[0]?.delta || {};
               const reasoning = delta.reasoning_content || "";
@@ -290,6 +341,7 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
                   }
                   blockIndex += 1;
                   thinkingBlockOpen = true;
+                  thinkingSignatureSent = false;
                   controller.enqueue(event("content_block_start", {
                     type: "content_block_start",
                     index: blockIndex,
@@ -321,8 +373,7 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
                     textBlockOpen = false;
                   }
                   if (thinkingBlockOpen) {
-                    controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: blockIndex }));
-                    thinkingBlockOpen = false;
+                    closeThinkingBlock();
                   }
                   blockIndex += 1;
                   toolBlocks.set(callIndex, blockIndex);
@@ -364,8 +415,9 @@ export function openAIStreamToAnthropic(stream: ReadableStream<Uint8Array>, requ
           }
         }
       } finally {
+        if (heartbeat) clearInterval(heartbeat);
         if (textBlockOpen) controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: blockIndex }));
-        if (thinkingBlockOpen) controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: blockIndex }));
+        if (thinkingBlockOpen) closeThinkingBlock();
         for (const toolBlockIndex of toolBlocks.values()) {
           if (!closedToolBlocks.has(toolBlockIndex)) {
             controller.enqueue(event("content_block_stop", { type: "content_block_stop", index: toolBlockIndex }));

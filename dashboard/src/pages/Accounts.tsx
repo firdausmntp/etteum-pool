@@ -378,7 +378,7 @@ export default function Accounts() {
           return;
         }
 
-        if (status.status === "error" || status.status === "cancelled" || status.status === "not_found") {
+        if (status.status === "error" || status.status === "cancelled" || status.status === "not_found" || status.status === "unknown") {
           resetCodexOAuthFlow();
           showError(new Error(status.error || "Codex OAuth failed"));
         }

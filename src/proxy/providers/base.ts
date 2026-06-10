@@ -20,7 +20,7 @@ export interface ChatCompletionRequest {
   tools?: any[];
   tool_choice?: any;
   reasoning_effort?: string;
-  thinking?: { type: string; budget_tokens?: number };
+  thinking?: { type: string; budget_tokens?: number; display?: string; effort?: string; summary?: string };
 }
 
 export interface ChatCompletionChoice {

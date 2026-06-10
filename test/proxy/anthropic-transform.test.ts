@@ -250,5 +250,7 @@ describe("openAIStreamToAnthropic streaming round-trip", () => {
     expect(thinking).toBeDefined();
     const thinkingDelta = events.find((e) => e.event === "content_block_delta" && e.data.delta?.type === "thinking_delta");
     expect(thinkingDelta?.data.delta.thinking).toBe("hmm");
+    const signatureDelta = events.find((e) => e.event === "content_block_delta" && e.data.delta?.type === "signature_delta");
+    expect(signatureDelta?.data.delta.signature).toBe("poolprox_unsigned_reasoning_summary");
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { pool } from "../../src/proxy/pool";
+import { providers } from "../../src/proxy/providers/registry";
 
 /**
  * Characterization test for model → provider routing.
@@ -19,7 +20,9 @@ describe("getProviderForModel", () => {
     ["qd-Qwen3.7-Max", "qoder"],
     // codex (must win over codebuddy for gpt-5-codex)
     ["codex-mini", "codex"],
+    ["codex-gpt-5.5-xhigh", "codex"],
     ["gpt-5-codex", "codex"],
+    ["gpt-5.5-xhigh", "codex"],
     // kiro-pro
     ["kp-opus-4.8", "kiro-pro"],
     ["kp-sonnet-4.6-thinking", "kiro-pro"],
@@ -60,5 +63,11 @@ describe("getProviderForModel", () => {
     for (const m of ["ws-claude-4.5-sonnet", "zai-glm", "pio-default", "mo-auto", "moclaw-x"]) {
       expect(removed.has(pool.getProviderForModel(m) as string)).toBe(false);
     }
+  });
+
+  test("codex gpt-5.5-xhigh alias uses codex metadata", () => {
+    expect(providers.codex.getModelInfo("gpt-5.5-xhigh")?.id).toBe("codex-gpt-5.5-xhigh");
+    expect(providers.codex.getModelInfo("codex-gpt-5.5-xhigh")?.id).toBe("codex-gpt-5.5-xhigh");
+    expect(providers.codex.getProviderCreditUnit("gpt-5.5-xhigh")).toBe("credit");
   });
 });

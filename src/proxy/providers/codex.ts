@@ -26,27 +26,48 @@ const CODEX_SCOPE = "openid profile email offline_access";
 
 const codexModelMap: Record<string, string> = {
   "codex-auto": "gpt-5.3-codex",
+  "codex-gpt-5.5-xhigh": "gpt-5.5-xhigh",
+  "gpt-5.5-xhigh": "gpt-5.5-xhigh",
   "codex-gpt-5.5": "gpt-5.5",
   "codex-gpt-5.4": "gpt-5.4",
   "codex-gpt-5.3": "gpt-5.3-codex",
   "codex-gpt-5.2": "gpt-5.2",
 };
 
+interface PendingToolCall {
+  index: number;
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+interface CodexReasoningConfig {
+  effort?: string;
+  summary?: "auto" | "detailed";
+}
+
 export class CodexProvider extends BaseProvider {
   name = "codex";
 
   override ownsModel(model: string): boolean {
     const m = model.toLowerCase();
-    return m.startsWith("codex-") || m === "gpt-5-codex";
+    return m.startsWith("codex-") || m === "gpt-5-codex" || m === "gpt-5.5-xhigh";
   }
 
   supportedModels: ModelInfo[] = [
     { id: "codex-auto", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.012 / 1000, creditSource: "estimated" },
+    { id: "codex-gpt-5.5-xhigh", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.02 / 1000, creditSource: "estimated" },
     { id: "codex-gpt-5.5", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.02 / 1000, creditSource: "estimated" },
     { id: "codex-gpt-5.4", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.015 / 1000, creditSource: "estimated" },
     { id: "codex-gpt-5.3", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.012 / 1000, creditSource: "estimated" },
     { id: "codex-gpt-5.2", object: "model", created: Date.now(), owned_by: "codex", context_window: 200000, max_output: 64000, thinking: true, vision: true, creditUnit: "credit", creditRate: 0.01 / 1000, creditSource: "estimated" },
   ];
+
+  override getModelInfo(model: string): ModelInfo | undefined {
+    const normalized = model.toLowerCase();
+    if (normalized === "gpt-5.5-xhigh") return super.getModelInfo("codex-gpt-5.5-xhigh");
+    return super.getModelInfo(model);
+  }
 
   private getTokens(account: Account): CodexTokens | null {
     if (!account.tokens) return null;
@@ -60,34 +81,217 @@ export class CodexProvider extends BaseProvider {
     return codexModelMap[model.toLowerCase()] || model;
   }
 
+  private contentToText(content: unknown): string {
+    if (!content) return "";
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((block: any) => {
+        if (typeof block === "string") return block;
+        if (block?.type === "text" || block?.type === "input_text" || block?.type === "output_text") return block.text || "";
+        if (block?.type === "tool_result") return this.contentToText(block.content) || String(block.content || "");
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private stringifyToolInput(input: unknown): string {
+    if (typeof input === "string") return input;
+    try { return JSON.stringify(input ?? {}); } catch { return "{}"; }
+  }
+
+  private normalizeTools(tools: any[] | undefined): any[] {
+    if (!Array.isArray(tools) || tools.length === 0) return [];
+    return tools
+      .map((tool) => {
+        if (tool?.type === "function" && tool.function?.name) {
+          return {
+            type: "function",
+            name: tool.function.name,
+            description: tool.function.description || "",
+            parameters: tool.function.parameters || { type: "object", properties: {} },
+          };
+        }
+        if (tool?.name) {
+          return {
+            type: "function",
+            name: tool.name,
+            description: tool.description || "",
+            parameters: tool.input_schema || tool.parameters || { type: "object", properties: {} },
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  private normalizeToolChoice(toolChoice: any): any {
+    if (toolChoice == null) return "auto";
+    if (typeof toolChoice === "string") return toolChoice;
+    if (toolChoice.type === "function" && toolChoice.function?.name) {
+      return { type: "function", name: toolChoice.function.name };
+    }
+    if (toolChoice.type === "tool" && toolChoice.name) {
+      return { type: "function", name: toolChoice.name };
+    }
+    return toolChoice;
+  }
+
+  private normalizeReasoningEffort(effort: unknown): string | undefined {
+    if (typeof effort !== "string") return undefined;
+    const normalized = effort.toLowerCase();
+    if (["minimal", "low", "medium", "high", "xhigh"].includes(normalized)) return normalized;
+    return undefined;
+  }
+
+  private effortFromThinkingBudget(budgetTokens: unknown): string | undefined {
+    if (typeof budgetTokens !== "number" || !Number.isFinite(budgetTokens) || budgetTokens <= 0) {
+      return undefined;
+    }
+    if (budgetTokens >= 16_000) return "high";
+    if (budgetTokens >= 4_000) return "medium";
+    return "low";
+  }
+
+  private buildReasoning(request: ChatCompletionRequest): CodexReasoningConfig | undefined {
+    const thinking = request.thinking as any;
+    if (thinking?.type === "disabled" || request.reasoning_effort === "none") return undefined;
+
+    const effort =
+      this.normalizeReasoningEffort(request.reasoning_effort) ||
+      this.normalizeReasoningEffort(thinking?.effort) ||
+      this.effortFromThinkingBudget(thinking?.budget_tokens) ||
+      (request.model.toLowerCase().includes("xhigh") ? "xhigh" : undefined) ||
+      (thinking ? "medium" : undefined);
+
+    const wantsVisibleSummary =
+      (thinking && thinking.display !== "omitted") ||
+      !!request.reasoning_effort ||
+      request.model.toLowerCase().includes("xhigh");
+    const summary = wantsVisibleSummary
+      ? (thinking?.summary === "detailed" ? "detailed" : "auto")
+      : undefined;
+
+    if (!effort && !summary) return undefined;
+    return { ...(effort ? { effort } : {}), ...(summary ? { summary } : {}) };
+  }
+
+  private textFromReasoningPart(part: any): string {
+    if (!part) return "";
+    if (typeof part === "string") return part;
+    if (typeof part.text === "string") return part.text;
+    if (typeof part.summary_text === "string") return part.summary_text;
+    if (typeof part.content === "string") return part.content;
+    if (Array.isArray(part.content)) {
+      return part.content.map((inner: any) => this.textFromReasoningPart(inner)).filter(Boolean).join("\n");
+    }
+    return "";
+  }
+
+  private extractReasoningItemText(item: any): string {
+    if (item?.type !== "reasoning") return "";
+    const parts = [item.summary, item.content, item.text, item.reasoning].flatMap((value) => {
+      if (Array.isArray(value)) return value;
+      return value == null ? [] : [value];
+    });
+    return parts.map((part) => this.textFromReasoningPart(part)).filter(Boolean).join("\n");
+  }
+
+  private extractReasoningDelta(event: any): string {
+    const type = event?.type || "";
+    if (
+      type === "response.reasoning_summary_text.delta" ||
+      type === "response.reasoning_text.delta" ||
+      type === "response.reasoning.delta"
+    ) {
+      return typeof event.delta === "string" ? event.delta : "";
+    }
+    return "";
+  }
+
   private buildPayload(request: ChatCompletionRequest): { instructions: string; input: unknown[] } {
     const systemParts: string[] = [];
     const items: unknown[] = [];
     for (const msg of request.messages) {
       const rawRole = msg.role as string;
-      const text = typeof msg.content === "string"
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? (msg.content as any[]).map(b => {
-              if (typeof b === "string") return b;
-              if (b?.type === "text") return b.text || "";
-              if (b?.type === "input_text") return b.text || "";
-              return "";
-            }).filter(Boolean).join("\n")
-          : "";
-      if (!text) continue;
+      const text = this.contentToText(msg.content);
       if (rawRole === "system") {
-        systemParts.push(text);
+        if (text) systemParts.push(text);
         continue;
       }
+      if (rawRole === "tool") {
+        items.push({
+          type: "function_call_output",
+          call_id: msg.tool_call_id || crypto.randomUUID(),
+          output: text,
+        });
+        continue;
+      }
+
       const role = rawRole === "tool" ? "user" : rawRole;
-      items.push({
-        type: "message",
-        role,
-        content: [{ type: role === "assistant" ? "output_text" : "input_text", text }],
-      });
+      if (text) {
+        items.push({
+          type: "message",
+          role,
+          content: [{ type: role === "assistant" ? "output_text" : "input_text", text }],
+        });
+      }
+
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content as any[]) {
+          if (block?.type === "tool_use" && block.id && block.name) {
+            items.push({
+              type: "function_call",
+              call_id: block.id,
+              name: block.name,
+              arguments: this.stringifyToolInput(block.input),
+            });
+          } else if (block?.type === "tool_result" && block.tool_use_id) {
+            items.push({
+              type: "function_call_output",
+              call_id: block.tool_use_id,
+              output: this.contentToText(block.content) || String(block.content || ""),
+            });
+          }
+        }
+      }
+
+      for (const call of msg.tool_calls || []) {
+        const name = call?.function?.name;
+        if (!name) continue;
+        items.push({
+          type: "function_call",
+          call_id: call.id || crypto.randomUUID(),
+          name,
+          arguments: this.stringifyToolInput(call.function?.arguments),
+        });
+      }
     }
     return { instructions: systemParts.join("\n\n"), input: items };
+  }
+
+  private collectCompletedToolCalls(response: any, byIndex: Map<number, PendingToolCall>) {
+    for (const [index, item] of (response?.output || []).entries()) {
+      if (item?.type !== "function_call") continue;
+      byIndex.set(index, {
+        index,
+        id: item.call_id || item.id || `call_${index}`,
+        name: item.name || "",
+        arguments: item.arguments || "",
+      });
+    }
+  }
+
+  private toolCallsFromMap(byIndex: Map<number, PendingToolCall>) {
+    return [...byIndex.values()]
+      .filter((call) => call.name)
+      .sort((a, b) => a.index - b.index)
+      .map((call) => ({
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: call.arguments || "{}" },
+      }));
   }
 
   private async makeRequest(account: Account, request: ChatCompletionRequest): Promise<Response> {
@@ -105,16 +309,19 @@ export class CodexProvider extends BaseProvider {
     if (tokens.account_id) headers["chatgpt-account-id"] = tokens.account_id;
 
     const { instructions, input } = this.buildPayload(request);
+    const tools = this.normalizeTools(request.tools);
+    const reasoning = this.buildReasoning(request);
     const body = {
       model: this.resolveModel(request.model),
       instructions,
       input,
-      tools: [],
-      tool_choice: "auto",
-      parallel_tool_calls: false,
+      tools,
+      tool_choice: tools.length > 0 ? this.normalizeToolChoice(request.tool_choice) : "auto",
+      parallel_tool_calls: tools.length > 0,
       store: false,
       stream: true,
       include: [],
+      ...(reasoning ? { reasoning } : {}),
     };
 
     return this.fetchWithTimeout(CODEX_RESPONSES_URL, {
@@ -143,8 +350,11 @@ export class CodexProvider extends BaseProvider {
       const decoder = new TextDecoder();
       let buffer = "";
       let text = "";
+      let reasoningText = "";
       let inputTokens = 0;
       let outputTokens = 0;
+      const toolCallsByIndex = new Map<number, PendingToolCall>();
+      const reasoningByOutput = new Map<number, string>();
 
       while (true) {
         const { value, done } = await reader.read();
@@ -166,9 +376,50 @@ export class CodexProvider extends BaseProvider {
           try {
             const obj = JSON.parse(dataLine);
             const t = obj.type || "";
-            if (t === "response.output_text.delta") {
+            const reasoningDelta = this.extractReasoningDelta(obj);
+            if (reasoningDelta) {
+              const index = Number(obj.output_index ?? 0);
+              reasoningByOutput.set(index, `${reasoningByOutput.get(index) || ""}${reasoningDelta}`);
+              reasoningText += reasoningDelta;
+            } else if (t === "response.reasoning_summary_text.done" || t === "response.reasoning_summary_part.done") {
+              const index = Number(obj.output_index ?? 0);
+              const doneText = typeof obj.text === "string" ? obj.text : this.textFromReasoningPart(obj.part);
+              if (doneText && !reasoningByOutput.get(index)) {
+                reasoningByOutput.set(index, doneText);
+                reasoningText += doneText;
+              }
+            } else if (t === "response.output_text.delta") {
               text += obj.delta || "";
+            } else if (t === "response.output_item.added" || t === "response.output_item.done") {
+              const item = obj.item || {};
+              if (item.type === "reasoning") {
+                const index = Number(obj.output_index ?? 0);
+                const itemText = this.extractReasoningItemText(item);
+                if (itemText && !reasoningByOutput.get(index)) {
+                  reasoningByOutput.set(index, itemText);
+                  reasoningText += itemText;
+                }
+              } else if (item.type === "function_call") {
+                const index = Number(obj.output_index ?? toolCallsByIndex.size);
+                toolCallsByIndex.set(index, {
+                  index,
+                  id: item.call_id || item.id || `call_${index}`,
+                  name: item.name || "",
+                  arguments: item.arguments || toolCallsByIndex.get(index)?.arguments || "",
+                });
+              }
+            } else if (t === "response.function_call_arguments.delta") {
+              const index = Number(obj.output_index ?? 0);
+              const current = toolCallsByIndex.get(index) || { index, id: obj.call_id || `call_${index}`, name: obj.name || "", arguments: "" };
+              current.arguments += obj.delta || "";
+              toolCallsByIndex.set(index, current);
+            } else if (t === "response.function_call_arguments.done") {
+              const index = Number(obj.output_index ?? 0);
+              const current = toolCallsByIndex.get(index) || { index, id: obj.call_id || `call_${index}`, name: obj.name || "", arguments: "" };
+              current.arguments = obj.arguments || current.arguments;
+              toolCallsByIndex.set(index, current);
             } else if (t === "response.completed") {
+              this.collectCompletedToolCalls(obj.response, toolCallsByIndex);
               const usage = obj.response?.usage;
               if (usage) {
                 inputTokens = Number(usage.input_tokens) || 0;
@@ -181,6 +432,7 @@ export class CodexProvider extends BaseProvider {
 
       const promptTokens = inputTokens || this.estimateMessagesTokens(request.messages);
       const completionTokens = outputTokens || this.estimateTokens(text);
+      const toolCalls = this.toolCallsFromMap(toolCallsByIndex);
 
       const resp: ChatCompletionResponse = {
         id: this.generateId(),
@@ -189,8 +441,13 @@ export class CodexProvider extends BaseProvider {
         model: request.model,
         choices: [{
           index: 0,
-          message: { role: "assistant", content: text },
-          finish_reason: "stop",
+          message: {
+            role: "assistant",
+            content: text,
+            ...(reasoningText ? { reasoning_content: reasoningText } : {}),
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+          } as any,
+          finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
         }],
         usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
       };
@@ -220,6 +477,7 @@ export class CodexProvider extends BaseProvider {
       const model = request.model;
       const encoder = new TextEncoder();
       const upstream = response.body;
+      const provider = this;
 
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -228,6 +486,10 @@ export class CodexProvider extends BaseProvider {
           let buffer = "";
           let started = false;
           let accumulated = "";
+          let hasToolCalls = false;
+          const toolCallsByIndex = new Map<number, PendingToolCall>();
+          const emittedToolIndexes = new Set<number>();
+          const reasoningByOutput = new Map<number, string>();
 
           const emit = (delta: any, finish_reason: string | null = null) => {
             const chunk: any = {
@@ -237,6 +499,55 @@ export class CodexProvider extends BaseProvider {
               choices: [{ index: 0, delta, finish_reason }],
             };
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+          };
+
+          const emitRole = () => {
+            if (started) return;
+            started = true;
+            emit({ role: "assistant" });
+          };
+
+          const emitToolStart = (call: PendingToolCall) => {
+            emitRole();
+            hasToolCalls = true;
+            emittedToolIndexes.add(call.index);
+            emit({
+              tool_calls: [{
+                index: call.index,
+                id: call.id,
+                type: "function",
+                function: { name: call.name, arguments: "" },
+              }],
+            });
+          };
+
+          const emitToolArguments = (index: number, delta: string) => {
+            if (!delta) return;
+            emitRole();
+            hasToolCalls = true;
+            emit({
+              tool_calls: [{
+                index,
+                function: { arguments: delta },
+              }],
+            });
+          };
+
+          const emitReasoning = (index: number, delta: string) => {
+            if (!delta) return;
+            emitRole();
+            reasoningByOutput.set(index, `${reasoningByOutput.get(index) || ""}${delta}`);
+            emit({ reasoning_content: delta });
+          };
+
+          const emitMissingCompletedToolCalls = () => {
+            for (const pending of [...toolCallsByIndex.values()].sort((a, b) => a.index - b.index)) {
+              if (!pending.name) continue;
+              if (!emittedToolIndexes.has(pending.index)) {
+                emitToolStart(pending);
+                emitToolArguments(pending.index, pending.arguments || "{}");
+              }
+            }
           };
 
           try {
@@ -260,18 +571,63 @@ export class CodexProvider extends BaseProvider {
                 try {
                   const obj = JSON.parse(dataLine);
                   const t = obj.type || "";
+                  const reasoningDelta = provider.extractReasoningDelta(obj);
 
-                  if (t === "response.output_text.delta") {
+                  if (reasoningDelta) {
+                    emitReasoning(Number(obj.output_index ?? 0), reasoningDelta);
+                  } else if (t === "response.reasoning_summary_text.done" || t === "response.reasoning_summary_part.done") {
+                    const index = Number(obj.output_index ?? 0);
+                    const doneText = typeof obj.text === "string" ? obj.text : provider.textFromReasoningPart(obj.part);
+                    if (doneText && !reasoningByOutput.get(index)) emitReasoning(index, doneText);
+                  } else if (t === "response.output_text.delta") {
                     const delta = obj.delta || "";
                     if (!delta) continue;
-                    if (!started) {
-                      started = true;
-                      emit({ role: "assistant" });
-                    }
+                    emitRole();
                     accumulated += delta;
                     emit({ content: delta });
+                  } else if (t === "response.output_item.added" || t === "response.output_item.done") {
+                    const item = obj.item || {};
+                    if (item.type === "reasoning") {
+                      const index = Number(obj.output_index ?? 0);
+                      const itemText = provider.extractReasoningItemText(item);
+                      if (itemText && !reasoningByOutput.get(index)) {
+                        emitReasoning(index, itemText);
+                      }
+                    } else if (item.type === "function_call") {
+                      const index = Number(obj.output_index ?? toolCallsByIndex.size);
+                      const current = toolCallsByIndex.get(index) || {
+                        index,
+                        id: item.call_id || item.id || `call_${index}`,
+                        name: item.name || "",
+                        arguments: "",
+                      };
+                      current.id = item.call_id || item.id || current.id;
+                      current.name = item.name || current.name;
+                      current.arguments = item.arguments || current.arguments;
+                      toolCallsByIndex.set(index, current);
+                      if (current.name && !emittedToolIndexes.has(index)) {
+                        emitToolStart(current);
+                        if (current.arguments) emitToolArguments(index, current.arguments);
+                      }
+                    }
+                  } else if (t === "response.function_call_arguments.delta") {
+                    const index = Number(obj.output_index ?? 0);
+                    const current = toolCallsByIndex.get(index) || { index, id: obj.call_id || `call_${index}`, name: obj.name || "", arguments: "" };
+                    current.arguments += obj.delta || "";
+                    toolCallsByIndex.set(index, current);
+                    emitToolArguments(index, obj.delta || "");
+                  } else if (t === "response.function_call_arguments.done") {
+                    const index = Number(obj.output_index ?? 0);
+                    const current = toolCallsByIndex.get(index) || { index, id: obj.call_id || `call_${index}`, name: obj.name || "", arguments: "" };
+                    const previousLength = current.arguments.length;
+                    current.arguments = obj.arguments || current.arguments;
+                    toolCallsByIndex.set(index, current);
+                    if (!emittedToolIndexes.has(index) && current.name) emitToolStart(current);
+                    if (current.arguments.length > previousLength && previousLength === 0) emitToolArguments(index, current.arguments);
                   } else if (t === "response.completed" || t === "response.done") {
-                    emit({}, "stop");
+                    provider.collectCompletedToolCalls(obj.response, toolCallsByIndex);
+                    emitMissingCompletedToolCalls();
+                    emit({}, hasToolCalls ? "tool_calls" : "stop");
                     controller.enqueue(encoder.encode("data: [DONE]\n\n"));
                     controller.close();
                     return;
@@ -286,7 +642,8 @@ export class CodexProvider extends BaseProvider {
             }
 
             if (!started) emit({ role: "assistant", content: accumulated });
-            emit({}, "stop");
+            emitMissingCompletedToolCalls();
+            emit({}, hasToolCalls ? "tool_calls" : "stop");
             controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
           } catch (err) {

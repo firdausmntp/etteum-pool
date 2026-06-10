@@ -637,22 +637,23 @@ proxyRouter.post("/v1/chat/completions", async (c) => {
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : String(error);
+    const mappedModel = resolveModelAlias(normalizeModelId(body.model));
 
     // Log the error without masking the original proxy failure.
-    const provider = pool.getProviderForModel(resolveModelAlias(normalizeModelId(body.model))) || "unknown";
+    const provider = pool.getProviderForModel(mappedModel) || "unknown";
     await logProxyError({
       provider,
-      model: body.model,
+      model: mappedModel,
       status: "error",
       errorMessage,
-      requestBody: prepareLogBody(body),
+      requestBody: prepareLogBody({ ...body, model: mappedModel, _poolprox: { originalModel: body.model } }),
       responseBody: prepareLogBody({ error: errorMessage }),
       durationMs: 0,
     }, "chat completion error");
 
     broadcast({
       type: "request_error",
-      data: { model: body.model, error: errorMessage },
+      data: { model: mappedModel, error: errorMessage },
     });
 
     const invalidModel = isInvalidModelError(errorMessage);
@@ -713,18 +714,19 @@ proxyRouter.post("/v1/messages", async (c) => {
     return c.json(openAIToAnthropic(result.response, body));
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const provider = pool.getProviderForModel(resolveModelAlias(normalizeModelId(body.model))) || "unknown";
+    const mappedModel = resolveModelAlias(normalizeModelId(body.model));
+    const provider = pool.getProviderForModel(mappedModel) || "unknown";
     await logProxyError({
       provider,
-      model: body.model,
+      model: mappedModel,
       status: "error",
       errorMessage,
-      requestBody: prepareLogBody(body),
+      requestBody: prepareLogBody({ ...body, model: mappedModel, _poolprox: { originalModel: body.model } }),
       responseBody: prepareLogBody({ error: errorMessage }),
       durationMs: 0,
     }, "messages error");
 
-    broadcast({ type: "request_error", data: { model: body.model, error: errorMessage } });
+    broadcast({ type: "request_error", data: { model: mappedModel, error: errorMessage } });
 
     const invalidModel = isInvalidModelError(errorMessage);
     const badUpstreamRequest = isBadUpstreamRequest(errorMessage);

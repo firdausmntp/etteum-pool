@@ -626,7 +626,10 @@ export async function exchangeCodexAuthorizationCode(input: {
 
   const response = await fetch(CODEX_TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
     body: form.toString(),
   });
 

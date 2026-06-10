@@ -5,13 +5,19 @@ export function isInvalidModelError(error?: string): boolean {
     normalized.includes("invalid_model_id") ||
     normalized.includes("invalid model") ||
     normalized.includes("model_not_found") ||
-    normalized.includes("no such model")
+    normalized.includes("no such model") ||
+    normalized.includes("model is not supported") ||
+    normalized.includes("model not supported")
   );
 }
 
 export function isBadUpstreamRequest(error?: string): boolean {
   if (!error) return false;
-  return error.toLowerCase().includes("improperly formed request");
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("improperly formed request") ||
+    normalized.includes("unsupported parameter")
+  );
 }
 
 export function isContentModerationError(error?: string): boolean {

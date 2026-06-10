@@ -12,6 +12,7 @@ describe("proxy error classification", () => {
     expect(isInvalidModelError("Invalid model requested")).toBe(true);
     expect(isInvalidModelError("MODEL_NOT_FOUND")).toBe(true);
     expect(isInvalidModelError("No such model: foo")).toBe(true);
+    expect(isInvalidModelError("The 'gpt-5.5-xhigh' model is not supported when using Codex with a ChatGPT account.")).toBe(true);
   });
 
   test("does not classify unrelated errors as invalid model", () => {
@@ -22,6 +23,7 @@ describe("proxy error classification", () => {
 
   test("detects bad upstream request errors", () => {
     expect(isBadUpstreamRequest("Improperly formed request body")).toBe(true);
+    expect(isBadUpstreamRequest("HTTP 400: {\"detail\":\"Unsupported parameter: max_output_tokens\"}")).toBe(true);
     expect(isBadUpstreamRequest("quota exhausted")).toBe(false);
   });
 
@@ -34,6 +36,7 @@ describe("proxy error classification", () => {
   test("groups client-side errors that should not poison accounts", () => {
     expect(isNonAccountRequestError("invalid model")).toBe(true);
     expect(isNonAccountRequestError("improperly formed request")).toBe(true);
+    expect(isNonAccountRequestError("Unsupported parameter: max_output_tokens")).toBe(true);
     // Content moderation is a content issue, not account issue — don't retry
     expect(isNonAccountRequestError("content moderation")).toBe(true);
     expect(isNonAccountRequestError("Content moderation: Your input was flagged")).toBe(true);

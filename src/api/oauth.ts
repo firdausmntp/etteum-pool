@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createHash, randomBytes } from "crypto";
 import { exchangeCodexAuthorizationCode, exchangeCodexRefreshTokens, importCodexAccessToken } from "./accounts";
 import {
   consumeCodexOAuthSession,
@@ -13,26 +14,21 @@ const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_FIXED_PORT = 1455;
 const CODEX_CALLBACK_PATH = "/auth/callback";
 const CODEX_SCOPE = "openid profile email offline_access";
+const CODEX_PROXY_TIMEOUT_MS = 300000;
 
 let codexLoopbackServer: Bun.Server<unknown> | null = null;
+let codexLoopbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-function base64UrlEncode(input: Uint8Array) {
-  return Buffer.from(input)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+function generateCodeVerifier(bytes = 32) {
+  return randomBytes(bytes).toString("base64url");
 }
 
-async function createCodeChallenge(codeVerifier: string) {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(codeVerifier));
-  return base64UrlEncode(new Uint8Array(hash));
+function generateCodeChallenge(codeVerifier: string) {
+  return createHash("sha256").update(codeVerifier).digest("base64url");
 }
 
-function randomPkceString(length = 64) {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  return base64UrlEncode(bytes).slice(0, length);
+function generateState() {
+  return randomBytes(32).toString("base64url");
 }
 
 export const oauthRouter = new Hono();
@@ -83,7 +79,7 @@ async function completeCodexOAuth(code: string, state: string) {
 }
 
 function buildCodexAuthorizeUrl(redirectUri: string, codeChallenge: string, state: string) {
-  const params = new URLSearchParams({
+  const params = {
     response_type: "code",
     client_id: CODEX_CLIENT_ID,
     redirect_uri: redirectUri,
@@ -91,10 +87,14 @@ function buildCodexAuthorizeUrl(redirectUri: string, codeChallenge: string, stat
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
     id_token_add_organizations: "true",
+    codex_cli_simplified_flow: "true",
+    originator: "codex_cli_rs",
     state,
-    originator: "openai_native",
-  });
-  return `${CODEX_ISSUER}/oauth/authorize?${params.toString()}`;
+  };
+  const queryString = Object.entries(params)
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join("&");
+  return `${CODEX_ISSUER}/oauth/authorize?${queryString}`;
 }
 
 function callbackHtml(title: string, message: string, closeWindow = false) {
@@ -104,6 +104,10 @@ function callbackHtml(title: string, message: string, closeWindow = false) {
   return `<!doctype html><html><head><meta charset="utf-8" /><title>${title}</title></head><body style="font-family:system-ui,sans-serif;padding:24px;background:#0b0f14;color:#e5e7eb"><div style="max-width:520px;margin:40px auto;padding:24px;border:1px solid #334155;border-radius:12px;background:#111827"><h1 style="margin:0 0 12px;font-size:20px">${title}</h1><p style="margin:0;color:#cbd5e1">${message}</p></div>${closeScript}</body></html>`;
 }
 
+function scheduleCodexLoopbackStop() {
+  setTimeout(() => stopCodexLoopbackServer(), 0);
+}
+
 async function handleCodexLoopbackCallback(url: URL) {
   const code = url.searchParams.get("code") || "";
   const state = url.searchParams.get("state") || "";
@@ -111,6 +115,7 @@ async function handleCodexLoopbackCallback(url: URL) {
   const errorDescription = url.searchParams.get("error_description") || error;
 
   if (!state) {
+    scheduleCodexLoopbackStop();
     return new Response(callbackHtml("Codex login failed", "Missing OAuth state."), {
       status: 400,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -119,6 +124,7 @@ async function handleCodexLoopbackCallback(url: URL) {
 
   if (error) {
     updateCodexOAuthSession(state, { status: "error", error: errorDescription || error });
+    scheduleCodexLoopbackStop();
     return new Response(callbackHtml("Codex login failed", errorDescription || error, true), {
       status: 400,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -127,6 +133,7 @@ async function handleCodexLoopbackCallback(url: URL) {
 
   if (!code) {
     updateCodexOAuthSession(state, { status: "error", error: "Missing authorization code" });
+    scheduleCodexLoopbackStop();
     return new Response(callbackHtml("Codex login failed", "Missing authorization code.", true), {
       status: 400,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -135,11 +142,13 @@ async function handleCodexLoopbackCallback(url: URL) {
 
   try {
     await completeCodexOAuth(code, state);
+    scheduleCodexLoopbackStop();
     return new Response(callbackHtml("Codex connected", "You can close this window and return to the dashboard.", true), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   } catch (oauthError) {
     const message = oauthError instanceof Error ? oauthError.message : String(oauthError);
+    scheduleCodexLoopbackStop();
     return new Response(callbackHtml("Codex login failed", message, true), {
       status: 500,
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -153,11 +162,10 @@ function ensureCodexLoopbackServer() {
   codexLoopbackServer = Bun.serve({
     hostname: "127.0.0.1",
     port: CODEX_FIXED_PORT,
-    reusePort: true,
     async fetch(req) {
       const url = new URL(req.url);
 
-      if (url.pathname === CODEX_CALLBACK_PATH) {
+      if (url.pathname === CODEX_CALLBACK_PATH || url.pathname === "/callback") {
         return handleCodexLoopbackCallback(url);
       }
 
@@ -174,7 +182,20 @@ function ensureCodexLoopbackServer() {
     },
   });
 
+  codexLoopbackTimeout = setTimeout(() => stopCodexLoopbackServer(), CODEX_PROXY_TIMEOUT_MS);
+
   return codexLoopbackServer;
+}
+
+function stopCodexLoopbackServer() {
+  if (codexLoopbackTimeout) {
+    clearTimeout(codexLoopbackTimeout);
+    codexLoopbackTimeout = null;
+  }
+  if (codexLoopbackServer) {
+    codexLoopbackServer.stop(true);
+    codexLoopbackServer = null;
+  }
 }
 
 oauthRouter.get("/codex/callback", async (c) => {
@@ -248,6 +269,23 @@ oauthRouter.post("/codex/exchange", async (c) => {
       });
     }
 
+    if (body.code && body.redirectUri && body.codeVerifier) {
+      const connection = await exchangeCodexAuthorizationCode({
+        code: body.code,
+        redirectUri: body.redirectUri,
+        codeVerifier: body.codeVerifier,
+      });
+      return c.json({
+        success: true,
+        connection: {
+          id: connection.id,
+          provider: connection.provider,
+          email: connection.email,
+          displayName: connection.name,
+        },
+      });
+    }
+
     if (body.code && body.state) {
       const result = await completeCodexOAuth(body.code, body.state);
       return c.json(result);
@@ -283,9 +321,9 @@ oauthRouter.post("/codex/exchange", async (c) => {
 
 oauthRouter.get("/codex/authorize", async (c) => {
   const redirectUri = c.req.query("redirect_uri") || `http://localhost:${CODEX_FIXED_PORT}${CODEX_CALLBACK_PATH}`;
-  const state = crypto.randomUUID();
-  const codeVerifier = randomPkceString(64);
-  const codeChallenge = await createCodeChallenge(codeVerifier);
+  const state = generateState();
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
   const authUrl = buildCodexAuthorizeUrl(redirectUri, codeChallenge, state);
   return c.json({
     authUrl,
@@ -311,7 +349,11 @@ oauthRouter.get("/codex/start-proxy", (c) => {
   try {
     ensureCodexLoopbackServer();
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = message.includes("EADDRINUSE") || message.includes("Address already in use")
+      ? "port_busy"
+      : message;
+    return c.json({ success: false, reason, serverSide: false });
   }
 
   createCodexOAuthSession({ state, codeVerifier, redirectUri, appPort });
@@ -320,10 +362,6 @@ oauthRouter.get("/codex/start-proxy", (c) => {
   return c.json({
     success: true,
     serverSide: true,
-    state,
-    redirectUri,
-    fixedPort: CODEX_FIXED_PORT,
-    callbackPath: CODEX_CALLBACK_PATH,
   });
 });
 
@@ -333,7 +371,7 @@ oauthRouter.get("/codex/poll-status", (c) => {
 
   const session = getCodexOAuthSession(state);
   if (!session) {
-    return c.json({ status: "not_found" }, 404);
+    return c.json({ status: "unknown" });
   }
 
   if (session.status === "done" || session.status === "error" || session.status === "cancelled") {
@@ -354,7 +392,8 @@ oauthRouter.get("/codex/stop-proxy", (c) => {
     updateCodexOAuthSession(state, { status: "cancelled", error: "Cancelled by user" });
     deleteCodexOAuthSession(state);
   }
-  return c.json({ success: true, serverSide: true });
+  stopCodexLoopbackServer();
+  return c.json({ success: true });
 });
 
 // 9router supports device-code on other providers; Codex does not use it here.
