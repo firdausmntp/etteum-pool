@@ -1,6 +1,6 @@
 import type { ChatCompletionRequest, ProviderResult } from "./providers/base";
 import { providers, getAllModels, type ProviderName } from "./providers/registry";
-import { isNonAccountRequestError } from "./errors";
+import { isNonAccountRequestError, isTransientError } from "./errors";
 import { applyPudidilFilters } from "./filters";
 import { pool } from "./pool";
 import type { Account } from "../db/schema";
@@ -118,7 +118,11 @@ export async function routeRequest(
   let lastError = "";
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const account = await pool.getNextAccount(providerName);
+    // BYOK uses prefix-based account lookup (not the generic pool),
+    // so it can also find error-status accounts and retry them.
+    const account = providerName === "byok"
+      ? (await pool.getAccountForModel(sanitizedRequest.model))?.account ?? null
+      : await pool.getNextAccount(providerName);
     if (!account) {
       throw new Error(
         `No active accounts available for provider: ${providerName}`
@@ -208,8 +212,12 @@ export async function routeRequest(
         continue;
       }
 
-      // Generic error - mark account and try next
-      await pool.markError(account.id, result.error || "Unknown error");
+      // Generic error - check if transient (network/timeout) or permanent
+      if (isTransientError(result.error || "")) {
+        await pool.markTransientFailure(account.id, result.error || "Transient error");
+      } else {
+        await pool.markError(account.id, result.error || "Unknown error");
+      }
       lastError = result.error || "Unknown error";
     } catch (error) {
       const errMsg =
@@ -222,6 +230,8 @@ export async function routeRequest(
         throw error;
       }
       if (errMsg.includes("expired") || errMsg.includes("401")) {
+        await pool.markTransientFailure(account.id, errMsg);
+      } else if (isTransientError(errMsg)) {
         await pool.markTransientFailure(account.id, errMsg);
       } else {
         await pool.markError(account.id, errMsg);

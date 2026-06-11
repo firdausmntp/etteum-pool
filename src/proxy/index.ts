@@ -15,7 +15,7 @@ import { isBadUpstreamRequest, isInvalidModelError } from "./errors";
 import { prepareLogBody } from "./logging";
 import { resolveModelAlias } from "./model-mapping";
 import { eq, sql } from "drizzle-orm";
-import { providerList } from "./providers/registry";
+import { providerList, refreshByokModels } from "./providers/registry";
 
 export const proxyRouter = new Hono();
 
@@ -565,7 +565,10 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
 /**
  * GET /v1/models - List available models
  */
-proxyRouter.get("/v1/models", (c) => {
+proxyRouter.get("/v1/models", async (c) => {
+  // Ensure BYOK cache is fresh before listing models.
+  // Without this, the sync getModels() returns stale/empty supportedModels.
+  await refreshByokModels();
   const models = getAllModels();
   return c.json({
     object: "list",

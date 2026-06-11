@@ -11,8 +11,9 @@ import {
   DialogTitle as DTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Plus, Upload, RefreshCw, Play, RotateCcw, Flame } from "lucide-react";
+import { Plus, Upload, RefreshCw, Play, RotateCcw, Flame, ChevronDown, Loader2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { useWsEvent } from "@/hooks/useWebSocket";
 import {
   completeCodexOAuthCallbackUrl,
@@ -99,6 +100,10 @@ export default function Accounts() {
     format: "auto" as "openai" | "anthropic" | "auto",
     models: "",
   });
+  const [expandedByokId, setExpandedByokId] = useState<number | null>(null);
+  const [byokTestResults, setByokTestResults] = useState<
+    Map<string, { status: 'testing' | 'success' | 'error'; latencyMs?: number; error?: string }>
+  >(new Map());
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codexOauthPopupRef = useRef<Window | null>(null);
   const codexOauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -637,12 +642,37 @@ export default function Accounts() {
     try {
       const result = await testByokProvider(id);
       if (result.success) {
-        showSuccess(`✓ ${label} connection successful (format: ${result.format}, model: ${result.model})`);
+        const latency = result.latency_ms ? ` · ${result.latency_ms}ms` : "";
+        const fixed = result.auto_fixed ? " — auto-fixed to active!" : "";
+        showSuccess(`✓ ${label} OK (format: ${result.format}, model: ${result.model}${latency})${fixed}`);
+        if (result.auto_fixed) await load();
       } else {
         showError(new Error(result.error || "Connection test failed"));
       }
     } catch (err) {
       showError(err);
+    }
+  }
+
+  async function handleTestByokModel(providerId: number, model: string) {
+    const key = `${providerId}-${model}`;
+    setByokTestResults(prev => new Map(prev).set(key, { status: 'testing' }));
+    try {
+      const result = await testByokProvider(providerId, model);
+      setByokTestResults(prev => new Map(prev).set(key, {
+        status: result.success ? 'success' : 'error',
+        latencyMs: result.latency_ms,
+        error: result.error,
+      }));
+      if (result.auto_fixed) {
+        showSuccess(`✓ ${model} OK (${result.latency_ms}ms) — account auto-fixed to active`);
+        await load();
+      }
+    } catch (err) {
+      setByokTestResults(prev => new Map(prev).set(key, {
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      }));
     }
   }
 
@@ -843,16 +873,22 @@ export default function Accounts() {
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {byokProviders.map((provider) => (
-              <Card key={provider.id} className="border-[var(--border)]">
-                <CardHeader className="pb-3">
+              <Card key={provider.id} className="border-[var(--border)] overflow-hidden">
+                <CardHeader
+                  className="pb-3 cursor-pointer hover:bg-[var(--secondary)]/30 transition-colors"
+                  onClick={() => setExpandedByokId(expandedByokId === provider.id ? null : provider.id)}
+                >
                   <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="text-base">{provider.label}</CardTitle>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="text-base">{provider.label}</CardTitle>
+                        <Badge variant={provider.status === "active" ? "default" : "secondary"}>
+                          {provider.status}
+                        </Badge>
+                      </div>
                       <p className="text-xs text-[var(--muted-foreground)] mt-1">{provider.base_url}</p>
                     </div>
-                    <Badge variant={provider.status === "active" ? "default" : "secondary"}>
-                      {provider.status}
-                    </Badge>
+                    <ChevronDown className={`h-4 w-4 transition-transform text-[var(--muted-foreground)] ${expandedByokId === provider.id ? "rotate-180" : ""}`} />
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -907,6 +943,73 @@ export default function Accounts() {
                     </Button>
                   </div>
                 </CardContent>
+
+                {expandedByokId === provider.id && (
+                  <div className="border-t border-[var(--border)] p-4 bg-[var(--secondary)]/10">
+                    <TooltipProvider>
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-[var(--foreground)] mb-3">
+                          Test Models ({provider.models.length})
+                        </h4>
+                        <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                          {provider.models.map((model) => {
+                            const key = `${provider.id}-${model}`;
+                            const result = byokTestResults.get(key);
+
+                            return (
+                              <div
+                                key={model}
+                                className="flex items-center justify-between p-2 rounded-md bg-[var(--card)] border border-[var(--border)]"
+                              >
+                                <Badge variant="outline" className="font-mono text-xs">
+                                  {model}
+                                </Badge>
+
+                                <div className="flex items-center gap-2">
+                                  {result?.status === 'testing' && (
+                                    <>
+                                      <Loader2 className="h-3 w-3 animate-spin text-[var(--primary)]" />
+                                      <span className="text-xs text-[var(--muted-foreground)]">Testing...</span>
+                                    </>
+                                  )}
+
+                                  {result?.status === 'success' && (
+                                    <span className="text-xs text-[var(--success)] font-medium">
+                                      ✓ {result.latencyMs}ms
+                                    </span>
+                                  )}
+
+                                  {result?.status === 'error' && (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="text-xs text-[var(--error)] cursor-help">
+                                          ✗ Error
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        <p className="max-w-xs text-xs">{result.error}</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )}
+
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs"
+                                    disabled={result?.status === 'testing'}
+                                    onClick={() => handleTestByokModel(provider.id, model)}
+                                  >
+                                    {result?.status === 'testing' ? 'Testing...' : 'Test'}
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </TooltipProvider>
+                  </div>
+                )}
               </Card>
             ))}
           </div>

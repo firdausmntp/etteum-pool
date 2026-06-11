@@ -242,10 +242,37 @@ accountsRouter.delete("/byok/:id", async (c) => {
 });
 
 /**
+ * Helper: Auto-fix account if in error state after successful test
+ */
+async function autoFixAccountIfError(accountId: number, accountStatus: string) {
+  if (accountStatus === 'error') {
+    await db.update(accounts)
+      .set({
+        status: 'active',
+        errorMessage: null,
+        updatedAt: new Date()
+      })
+      .where(eq(accounts.id, accountId));
+    pool.invalidate('byok');
+    const { refreshByokModels } = await import("../proxy/providers/registry");
+    await refreshByokModels();
+    broadcast({
+      type: 'account_status',
+      data: { id: accountId, status: 'active' }
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
  * POST /api/accounts/byok/:id/test - Test BYOK connection
+ * Accepts optional { model?: string } body to test a specific model.
+ * Returns latency_ms and auto_fixed status.
  */
 accountsRouter.post("/byok/:id/test", async (c) => {
   const id = Number(c.req.param("id"));
+  const reqBody = await c.req.json().catch(() => ({})) as { model?: string };
 
   const account = await db.select().from(accounts)
     .where(eq(accounts.id, id))
@@ -265,7 +292,15 @@ accountsRouter.post("/byok/:id/test", async (c) => {
 
   const apiKey = decrypt(account.password);
   const format = tokens.format || "auto";
-  const testModel = tokens.models[0];
+  const testModel = reqBody.model || tokens.models[0];
+
+  // Validate model if provided
+  if (reqBody.model && !tokens.models.includes(reqBody.model)) {
+    return c.json({
+      success: false,
+      error: `Model "${reqBody.model}" not found in provider configuration`
+    }, 400);
+  }
 
   // Determine endpoint based on format
   const isAnthropic = format === "anthropic" ||
@@ -300,30 +335,41 @@ accountsRouter.post("/byok/:id/test", async (c) => {
   }
 
   try {
+    const startTime = Date.now();
     const response = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
+    const latencyMs = Date.now() - startTime;
 
     if (response.status === 401 || response.status === 403) {
-      return c.json({ success: false, error: "Authentication failed" });
+      return c.json({ success: false, error: "Authentication failed", latency_ms: latencyMs });
     }
 
     if (response.status === 429) {
-      return c.json({ success: true, warning: "Rate limited but authentication works" });
+      const autoFixed = await autoFixAccountIfError(id, account.status);
+      return c.json({
+        success: true,
+        warning: "Rate limited but authentication works",
+        latency_ms: latencyMs,
+        auto_fixed: autoFixed
+      });
     }
 
     if (!response.ok) {
       const text = await response.text();
-      return c.json({ success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` });
+      return c.json({ success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}`, latency_ms: latencyMs });
     }
 
+    const autoFixed = await autoFixAccountIfError(id, account.status);
     return c.json({
       success: true,
       message: "Connection test passed",
       model: testModel,
       format: isAnthropic ? "anthropic" : "openai",
+      latency_ms: latencyMs,
+      auto_fixed: autoFixed
     });
   } catch (error) {
     return c.json({
@@ -1325,98 +1371,6 @@ accountsRouter.delete("/byok/:id", async (c) => {
   await refreshByokModels();
 
   return c.json({ success: true, deleted: id });
-});
-
-/**
- * POST /api/accounts/byok/:id/test - Test BYOK connection
- */
-accountsRouter.post("/byok/:id/test", async (c) => {
-  const id = Number(c.req.param("id"));
-
-  const account = await db.select().from(accounts)
-    .where(eq(accounts.id, id))
-    .get();
-
-  if (!account || account.provider !== "byok") {
-    return c.json({ error: "BYOK provider not found" }, 404);
-  }
-
-  const tokens = typeof account.tokens === "string"
-    ? JSON.parse(account.tokens)
-    : account.tokens;
-
-  if (!tokens?.base_url || !tokens?.models || tokens.models.length === 0) {
-    return c.json({ success: false, error: "Invalid BYOK configuration" });
-  }
-
-  const apiKey = decrypt(account.password);
-  const format = tokens.format || "auto";
-  const testModel = tokens.models[0];
-
-  // Determine endpoint based on format
-  const isAnthropic = format === "anthropic" ||
-    (format === "auto" && (tokens.base_url.includes("anthropic.com") || tokens.base_url.includes("/v1/messages")));
-
-  const url = isAnthropic
-    ? `${tokens.base_url}/messages`
-    : `${tokens.base_url}/chat/completions`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(tokens.headers || {}),
-  };
-
-  const body = isAnthropic
-    ? {
-        model: testModel,
-        messages: [{ role: "user", content: "Hi" }],
-        max_tokens: 1,
-      }
-    : {
-        model: testModel,
-        messages: [{ role: "user", content: "Hi" }],
-        max_tokens: 1,
-      };
-
-  if (isAnthropic) {
-    headers["x-api-key"] = apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-  } else {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-
-    if (response.status === 401 || response.status === 403) {
-      return c.json({ success: false, error: "Authentication failed" });
-    }
-
-    if (response.status === 429) {
-      return c.json({ success: true, warning: "Rate limited but authentication works" });
-    }
-
-    if (!response.ok) {
-      const text = await response.text();
-      return c.json({ success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` });
-    }
-
-    return c.json({
-      success: true,
-      message: "Connection test passed",
-      model: testModel,
-      format: isAnthropic ? "anthropic" : "openai",
-    });
-  } catch (error) {
-    return c.json({
-      success: false,
-      error: error instanceof Error ? error.message : "Network error",
-    });
-  }
 });
 
 /**

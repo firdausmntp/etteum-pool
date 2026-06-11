@@ -231,6 +231,19 @@ export async function saveIntegration(payload: { enabled?: boolean; mappings?: M
   });
 }
 
+export interface ApplyConfigResult {
+  success: boolean;
+  path: string;
+  config: Record<string, unknown>;
+}
+
+export async function applyIntegrationConfig(baseUrl: string): Promise<ApplyConfigResult> {
+  return fetchApi("/api/integration/apply-config", {
+    method: "POST",
+    body: JSON.stringify({ baseUrl }),
+  });
+}
+
 export async function fetchSettings() {
   return fetchApi("/api/settings");
 }
@@ -681,7 +694,19 @@ export async function deleteByokProvider(id: number): Promise<{ success: boolean
 }
 
 export async function testByokProvider(
-  id: number
-): Promise<{ success: boolean; error?: string; warning?: string; model?: string; format?: string }> {
-  return fetchApi(`/api/accounts/byok/${id}/test`, { method: "POST" });
+  id: number,
+  model?: string
+): Promise<{
+  success: boolean;
+  error?: string;
+  warning?: string;
+  model?: string;
+  format?: string;
+  latency_ms?: number;
+  auto_fixed?: boolean;
+}> {
+  return fetchApi(`/api/accounts/byok/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify(model ? { model } : {})
+  });
 }

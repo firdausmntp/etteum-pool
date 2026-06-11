@@ -87,7 +87,11 @@ export class ByokProvider extends BaseProvider {
     const newSupportedModels: ModelInfo[] = [];
 
     for (const account of byokAccounts) {
-      if (!account.enabled || account.status !== "active") continue;
+      if (!account.enabled) continue;
+      // Include error accounts so routing still claims their prefix.
+      // The router will handle retries/failures; we must not let their
+      // models fall through to the fallback provider (Kiro).
+      if (account.status !== "active" && account.status !== "error") continue;
 
       const tokens = this.parseTokens(account.tokens);
       if (!tokens?.base_url || !tokens.models?.length) continue;

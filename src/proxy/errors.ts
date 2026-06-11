@@ -46,3 +46,29 @@ export function isNonAccountRequestError(error?: string): boolean {
     isBadUpstreamRequest(error)
   );
 }
+
+/**
+ * Transient errors that are temporary and should not permanently mark an account as errored.
+ * These include network issues, timeouts, and other temporary failures.
+ * Account stays "active" but error is logged.
+ */
+export function isTransientError(error?: string): boolean {
+  if (!error) return false;
+  const normalized = error.toLowerCase();
+  return (
+    normalized.includes("timeout") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("request timeout") ||
+    normalized.includes("network error") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("enotfound") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("dns") ||
+    normalized.includes("connection") ||
+    normalized.includes("aborted") ||
+    normalized.includes("eai again") ||
+    normalized.includes("temporary failure")
+  );
+}
