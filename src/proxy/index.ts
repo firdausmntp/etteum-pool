@@ -19,7 +19,7 @@ import { providerList, refreshByokModels } from "./providers/registry";
 
 export const proxyRouter = new Hono();
 
-const MAX_REQUEST_LOGS = 500;
+const MAX_REQUEST_LOGS = 50;
 
 /** Upsert a request's stats into the usage_summary table (hourly bucket) */
 async function upsertUsageSummary(entry: {

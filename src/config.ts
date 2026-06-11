@@ -21,8 +21,8 @@ export const config = {
     process.env.ENCRYPTION_KEY || "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
   headless: process.env.HEADLESS !== "false", // default true
   logBodyEnabled: process.env.POOLPROX_LOG_BODY_ENABLED !== "false",
-  logBodyFull: process.env.POOLPROX_LOG_BODY_FULL === "true",
-  logBodyRedact: process.env.POOLPROX_LOG_BODY_REDACT !== "false",
+  logBodyFull: process.env.POOLPROX_LOG_BODY_FULL !== "false",
+  logBodyRedact: process.env.POOLPROX_LOG_BODY_REDACT === "true",
   logBodyMaxBytes: Number(process.env.POOLPROX_LOG_BODY_MAX_BYTES) || 65536,
   accountCacheTtlMs: Number(process.env.POOLPROX_ACCOUNT_CACHE_TTL_MS) || 3000,
   authProcessTimeoutMs: Number(process.env.POOLPROX_AUTH_PROCESS_TIMEOUT_MS) || 10 * 60 * 1000,
