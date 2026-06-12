@@ -11,7 +11,7 @@ import {
   DialogTitle as DTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Plus, Upload, RefreshCw, Play, RotateCcw, Flame, ChevronDown, Loader2 } from "lucide-react";
+import { Plus, Upload, RefreshCw, Play, RotateCcw, Flame, ChevronDown, Loader2, Key, Pencil, Trash2, Zap, FlaskConical, Lock, Shield } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { useWsEvent } from "@/hooks/useWebSocket";
@@ -855,25 +855,36 @@ export default function Accounts() {
 
       {/* BYOK Providers Section */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-[var(--foreground)]">Custom Providers (BYOK)</h2>
-            <p className="text-sm text-[var(--muted-foreground)]">Bring Your Own Key - use your own API providers</p>
+        <div className="flex items-center justify-between rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--primary)]/10 text-[var(--primary)]">
+              <Key className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-[var(--foreground)]">Custom Providers (BYOK)</h2>
+              <p className="text-sm text-[var(--muted-foreground)]">Bring Your Own Key — use your own API providers</p>
+            </div>
           </div>
-          <Button onClick={() => setByokDialogOpen(true)}>
-            <Plus className="mr-2 h-4 w-4" /> Add Provider
+          <Button onClick={() => setByokDialogOpen(true)} className="gap-2 shadow-sm">
+            <Plus className="h-4 w-4" /> Add Provider
           </Button>
         </div>
 
         {byokProviders.length === 0 ? (
-          <div className="rounded-md border border-dashed border-[var(--border)] p-8 text-center">
-            <p className="text-sm text-[var(--muted-foreground)]">No custom providers configured yet</p>
-            <p className="text-xs text-[var(--muted-foreground)] mt-1">Add your own API provider to use custom models</p>
+          <div className="rounded-lg border border-dashed border-[var(--primary)]/20 bg-[var(--primary)]/[0.02] p-10 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--primary)]/10">
+              <Shield className="h-7 w-7 text-[var(--primary)]" />
+            </div>
+            <p className="text-sm font-medium text-[var(--foreground)]">No custom providers configured yet</p>
+            <p className="text-xs text-[var(--muted-foreground)] mt-1.5 mb-4">Connect your own API provider to use custom models with your keys</p>
+            <Button size="sm" onClick={() => setByokDialogOpen(true)} className="gap-2">
+              <Plus className="h-4 w-4" /> Add Your First Provider
+            </Button>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {byokProviders.map((provider) => (
-              <Card key={provider.id} className="border-[var(--border)] overflow-hidden">
+              <Card key={provider.id} className="border-[var(--border)] overflow-hidden hover:border-[var(--primary)]/50 transition-all duration-200">
                 <CardHeader
                   className="pb-3 cursor-pointer hover:bg-[var(--secondary)]/30 transition-colors"
                   onClick={() => setExpandedByokId(expandedByokId === provider.id ? null : provider.id)}
@@ -882,13 +893,19 @@ export default function Accounts() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <CardTitle className="text-base">{provider.label}</CardTitle>
-                        <Badge variant={provider.status === "active" ? "default" : "secondary"}>
-                          {provider.status}
+                        <Badge
+                          variant={provider.status === "active" ? "default" : "secondary"}
+                          className={provider.status === "active"
+                            ? "bg-[var(--primary)]/15 text-[var(--primary)] border border-[var(--primary)]/30"
+                            : "bg-[var(--warning)]/10 text-[var(--warning)] border border-[var(--warning)]/30"
+                          }
+                        >
+                          {provider.status === "active" ? "● Active" : "○ Inactive"}
                         </Badge>
                       </div>
-                      <p className="text-xs text-[var(--muted-foreground)] mt-1">{provider.base_url}</p>
+                      <p className="text-xs text-[var(--muted-foreground)] mt-1 truncate">{provider.base_url}</p>
                     </div>
-                    <ChevronDown className={`h-4 w-4 transition-transform text-[var(--muted-foreground)] ${expandedByokId === provider.id ? "rotate-180" : ""}`} />
+                    <ChevronDown className={`h-4 w-4 transition-transform duration-200 text-[var(--muted-foreground)] ${expandedByokId === provider.id ? "rotate-180" : ""}`} />
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -903,55 +920,64 @@ export default function Accounts() {
                     </div>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <p className="text-xs text-[var(--muted-foreground)]">Available Models</p>
                     <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
                       {provider.available_models?.slice(0, 10).map((model) => (
-                        <Badge key={model} variant="outline" className="text-xs">
+                        <Badge key={model} variant="outline" className="text-xs border-[var(--primary)]/20 text-[var(--primary)]/80 bg-[var(--primary)]/[0.05] font-mono">
                           {model}
                         </Badge>
                       ))}
                       {provider.available_models && provider.available_models.length > 10 && (
-                        <Badge variant="outline" className="text-xs">
+                        <Badge variant="outline" className="text-xs bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/30 font-medium">
                           +{provider.available_models.length - 10} more
                         </Badge>
                       )}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 pt-2">
+                  <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[var(--border)]/50">
                     <Button
                       variant="outline"
                       size="sm"
+                      className="gap-1.5 text-[var(--foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
                       onClick={() => handleEditByok(provider)}
                     >
-                      Edit
+                      <Pencil className="h-3.5 w-3.5" /> Edit
                     </Button>
                     <Button
                       variant="outline"
                       size="sm"
+                      className="gap-1.5 border-[var(--info)]/30 text-[var(--info)] hover:bg-[var(--info)]/10 hover:text-[var(--info)]"
                       onClick={() => handleTestByok(provider.id, provider.label)}
                     >
-                      Test
+                      <Zap className="h-3.5 w-3.5" /> Test
                     </Button>
                     <Button
-                      variant="destructive"
+                      variant="outline"
                       size="sm"
+                      className="gap-1.5 border-[var(--error)]/30 text-[var(--error)] hover:bg-[var(--error)]/10 hover:text-[var(--error)]"
                       onClick={() => handleDeleteByok(provider.id, provider.label)}
                     >
-                      Delete
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
                     </Button>
                   </div>
                 </CardContent>
 
                 {expandedByokId === provider.id && (
-                  <div className="border-t border-[var(--border)] p-4 bg-[var(--secondary)]/10">
+                  <div className="border-t border-[var(--border)] p-4 bg-[var(--secondary)]/[0.06]">
                     <TooltipProvider>
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-medium text-[var(--foreground)] mb-3">
-                          Test Models ({provider.models.length})
-                        </h4>
-                        <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FlaskConical className="h-4 w-4 text-[var(--info)]" />
+                          <h4 className="text-sm font-medium text-[var(--foreground)]">
+                            Test Models
+                          </h4>
+                          <span className="text-xs text-[var(--muted-foreground)] bg-[var(--secondary)] px-1.5 py-0.5 rounded">
+                            {provider.models.length}
+                          </span>
+                        </div>
+                        <div className="space-y-2 max-h-60 overflow-y-auto">
                           {provider.models.map((model) => {
                             const key = `${provider.id}-${model}`;
                             const result = byokTestResults.get(key);
@@ -959,9 +985,15 @@ export default function Accounts() {
                             return (
                               <div
                                 key={model}
-                                className="flex items-center justify-between p-2 rounded-md bg-[var(--card)] border border-[var(--border)]"
+                                className={`flex items-center justify-between p-2.5 rounded-md bg-[var(--card)] border transition-colors hover:border-[var(--primary)]/30 ${
+                                  result?.status === 'success'
+                                    ? 'border-[var(--success)]/30'
+                                    : result?.status === 'error'
+                                    ? 'border-[var(--error)]/30'
+                                    : 'border-[var(--border)]'
+                                }`}
                               >
-                                <Badge variant="outline" className="font-mono text-xs">
+                                <Badge variant="outline" className="font-mono text-xs border-[var(--primary)]/20 text-[var(--primary)]/80 bg-[var(--primary)]/[0.05]">
                                   {model}
                                 </Badge>
 
@@ -974,7 +1006,7 @@ export default function Accounts() {
                                   )}
 
                                   {result?.status === 'success' && (
-                                    <span className="text-xs text-[var(--success)] font-medium">
+                                    <span className="inline-flex items-center gap-1 text-xs text-[var(--success)] font-medium bg-[var(--success)]/10 px-2 py-0.5 rounded-full">
                                       ✓ {result.latencyMs}ms
                                     </span>
                                   )}
@@ -982,7 +1014,7 @@ export default function Accounts() {
                                   {result?.status === 'error' && (
                                     <Tooltip>
                                       <TooltipTrigger asChild>
-                                        <span className="text-xs text-[var(--error)] cursor-help">
+                                        <span className="inline-flex items-center gap-1 text-xs text-[var(--error)] cursor-help bg-[var(--error)]/10 px-2 py-0.5 rounded-full">
                                           ✗ Error
                                         </span>
                                       </TooltipTrigger>
@@ -995,11 +1027,12 @@ export default function Accounts() {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    className="h-7 px-2 text-xs"
+                                    className="h-7 px-2.5 text-xs gap-1 border-[var(--info)]/30 text-[var(--info)] hover:bg-[var(--info)]/10 hover:text-[var(--info)]"
                                     disabled={result?.status === 'testing'}
                                     onClick={() => handleTestByokModel(provider.id, model)}
                                   >
-                                    {result?.status === 'testing' ? 'Testing...' : 'Test'}
+                                    <Zap className="h-3 w-3" />
+                                    {result?.status === 'testing' ? '...' : 'Test'}
                                   </Button>
                                 </div>
                               </div>
@@ -1020,88 +1053,119 @@ export default function Accounts() {
       <Dialog open={byokDialogOpen} onOpenChange={(open) => !open && handleCloseByokDialog()}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DTitle>{byokEditId ? 'Edit Custom Provider' : 'Add Custom Provider'}</DTitle>
-            <DialogDescription>
-              {byokEditId ? 'Update your AI provider configuration' : 'Configure your own AI provider with your API key'}
-            </DialogDescription>
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--primary)]/10 text-[var(--primary)]">
+                <Key className="h-4.5 w-4.5" />
+              </div>
+              <div>
+                <DTitle>{byokEditId ? 'Edit Custom Provider' : 'Add Custom Provider'}</DTitle>
+                <DialogDescription className="mt-0.5">
+                  {byokEditId ? 'Update your AI provider configuration' : 'Configure your own AI provider with your API key'}
+                </DialogDescription>
+              </div>
+            </div>
           </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--foreground)]">Provider Name (Label)</label>
-              <Input
-                value={byokForm.label}
-                onChange={(e) => setByokForm({ ...byokForm, label: e.target.value })}
-                placeholder="e.g., openrouter, myprovider"
-                readOnly={byokEditId !== null}
-                className={byokEditId ? 'bg-[var(--muted)]' : ''}
-              />
-              <p className="text-xs text-[var(--muted-foreground)]">
-                {byokEditId ? 'Model prefix cannot be changed after creation' : 'Used as model prefix (e.g., "openrouter-gpt-4")'}
-              </p>
+          <div className="space-y-4 pt-3">
+            {/* Connection Settings */}
+            <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/[0.06] p-3.5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Connection</p>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-[var(--foreground)]">Provider Name</label>
+                <Input
+                  value={byokForm.label}
+                  onChange={(e) => setByokForm({ ...byokForm, label: e.target.value })}
+                  placeholder="e.g., openrouter, myprovider"
+                  readOnly={byokEditId !== null}
+                  className={`focus:ring-1 focus:ring-[var(--ring)] ${byokEditId ? 'bg-[var(--muted)] opacity-60' : ''}`}
+                />
+                <p className="text-xs text-[var(--muted-foreground)]">
+                  {byokEditId ? 'Prefix cannot be changed after creation' : 'Used as model prefix (e.g., "openrouter-gpt-4")'}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-[var(--foreground)]">Base URL</label>
+                <Input
+                  value={byokForm.base_url}
+                  onChange={(e) => setByokForm({ ...byokForm, base_url: e.target.value })}
+                  placeholder="https://api.provider.com/v1"
+                  className="focus:ring-1 focus:ring-[var(--ring)]"
+                />
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--foreground)]">Base URL</label>
-              <Input
-                value={byokForm.base_url}
-                onChange={(e) => setByokForm({ ...byokForm, base_url: e.target.value })}
-                placeholder="https://api.provider.com/v1"
-              />
-            </div>
+            {/* Authentication */}
+            <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/[0.06] p-3.5">
+              <div className="flex items-center gap-1.5">
+                <Lock className="h-3.5 w-3.5 text-[var(--muted-foreground)]" />
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Authentication</p>
+              </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--foreground)]">
-                API Key
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-[var(--foreground)] flex items-center gap-2">
+                  API Key
+                  {byokEditId && (
+                    <span className="inline-flex items-center gap-1 text-xs text-[var(--success)] font-normal bg-[var(--success)]/10 px-1.5 py-0.5 rounded-full">✓ Saved</span>
+                  )}
+                </label>
+                <Input
+                  type="password"
+                  value={byokForm.api_key}
+                  onChange={(e) => setByokForm({ ...byokForm, api_key: e.target.value })}
+                  onFocus={() => {
+                    if (byokEditId && byokForm.api_key === BYOK_KEY_PLACEHOLDER) {
+                      setByokForm({ ...byokForm, api_key: "" });
+                    }
+                  }}
+                  placeholder={byokEditId ? 'Enter new key to replace, or leave blank' : 'sk-...'}
+                  className="focus:ring-1 focus:ring-[var(--ring)]"
+                />
                 {byokEditId && (
-                  <span className="ml-2 text-xs text-emerald-500 font-normal">✓ Key saved</span>
+                  <p className="text-xs text-[var(--muted-foreground)]">Leave blank to keep existing API key</p>
                 )}
-              </label>
-              <Input
-                type="password"
-                value={byokForm.api_key}
-                onChange={(e) => setByokForm({ ...byokForm, api_key: e.target.value })}
-                onFocus={() => {
-                  if (byokEditId && byokForm.api_key === BYOK_KEY_PLACEHOLDER) {
-                    setByokForm({ ...byokForm, api_key: "" });
-                  }
-                }}
-                placeholder={byokEditId ? 'Enter new key to replace, or leave blank to keep' : 'sk-...'}
-              />
-              {byokEditId && (
-                <p className="text-xs text-[var(--muted-foreground)]">Leave blank to keep existing API key</p>
-              )}
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--foreground)]">API Format</label>
-              <select
-                value={byokForm.format}
-                onChange={(e) => setByokForm({ ...byokForm, format: e.target.value as any })}
-                className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)]"
-              >
-                <option value="auto">Auto-detect</option>
-                <option value="openai">OpenAI-compatible</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
+            {/* Model Configuration */}
+            <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/[0.06] p-3.5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Configuration</p>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-[var(--foreground)]">API Format</label>
+                <select
+                  value={byokForm.format}
+                  onChange={(e) => setByokForm({ ...byokForm, format: e.target.value as any })}
+                  className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
+                >
+                  <option value="auto">Auto-detect</option>
+                  <option value="openai">OpenAI-compatible</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-[var(--foreground)]">Models</label>
+                <textarea
+                  value={byokForm.models}
+                  onChange={(e) => setByokForm({ ...byokForm, models: e.target.value })}
+                  placeholder="gpt-4, claude-3-opus, llama-3"
+                  className="w-full h-20 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
+                />
+                <p className="text-xs text-[var(--muted-foreground)]">Comma-separated list of model IDs</p>
+              </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-[var(--foreground)]">Models</label>
-              <textarea
-                value={byokForm.models}
-                onChange={(e) => setByokForm({ ...byokForm, models: e.target.value })}
-                placeholder="gpt-4, claude-3-opus, llama-3"
-                className="w-full h-20 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
-              />
-              <p className="text-xs text-[var(--muted-foreground)]">Comma-separated list of model IDs</p>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={handleCloseByokDialog}>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={handleCloseByokDialog} className="text-[var(--muted-foreground)]">
                 Cancel
               </Button>
-              <Button onClick={byokEditId ? handleUpdateByok : handleAddByok}>
-                {byokEditId ? 'Update Provider' : 'Add Provider'}
+              <Button onClick={byokEditId ? handleUpdateByok : handleAddByok} className="gap-2 shadow-sm">
+                {byokEditId ? (
+                  <><Pencil className="h-4 w-4" /> Update Provider</>
+                ) : (
+                  <><Plus className="h-4 w-4" /> Add Provider</>
+                )}
               </Button>
             </div>
           </div>
