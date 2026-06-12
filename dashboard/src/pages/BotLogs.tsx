@@ -105,7 +105,8 @@ function logsToProcesses(logs: AuthLog[]): ProcessLog[] {
     existing.updatedAt = log.timestamp;
   }
 
-  return [...groups.values()].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  // Sort by queue order (startedAt) — position stays stable as new logs arrive
+  return [...groups.values()].sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 }
 
 export default function BotLogs() {
