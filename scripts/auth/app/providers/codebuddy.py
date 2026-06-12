@@ -2653,23 +2653,31 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
         email_step_started_at: float | None = None
         _codebuddy_base_netloc = urlparse(CODEBUDDY_BASE_URL).netloc
 
-        # Global wall-clock timeout: 150s max for the entire authenticate loop.
-        # Generous enough for slow connections/proxies, still prevents infinite spin.
-        _auth_wall_clock_deadline = time.monotonic() + 150.0
+        # Inactivity timeout: only timeout if NO progress for 150s.
+        # As long as something is happening (URL changes, buttons clicked, pages loading),
+        # the timer resets. This handles slow internet gracefully.
+        _INACTIVITY_TIMEOUT = 150.0
+        _last_progress_at = time.monotonic()
+        _last_seen_url = ""
 
         # Progress tracking — emit each step only once
         _progress_emitted: set[str] = set()
 
         _consecutive_page_errors = 0
-        for _ in range(150):
-            if time.monotonic() > _auth_wall_clock_deadline:
+        for _ in range(600):  # High iteration cap — inactivity timeout is the real guard
+            _now_mono = time.monotonic()
+            if _now_mono - _last_progress_at > _INACTIVITY_TIMEOUT:
                 raise RetryableBatcherError(
                     ErrorCode.auth_temporary_failure,
-                    "codebuddy authenticate exceeded 150s wall-clock timeout",
+                    "codebuddy authenticate stuck — no progress for 150s",
                 )
             try:
                 current_url = page.url
                 _consecutive_page_errors = 0
+                # Reset inactivity timer when URL changes (page navigated = progress)
+                if current_url and current_url != _last_seen_url:
+                    _last_progress_at = time.monotonic()
+                    _last_seen_url = current_url
             except Exception as _page_exc:
                 _consecutive_page_errors += 1
                 # If page is consistently unreachable, browser likely crashed
@@ -2762,6 +2770,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                         pass
 
             if is_verify_email_page:
+                _last_progress_at = time.monotonic()  # progress: email verification page
                 _codebuddy_auth_debug(f"email verification page detected at {current_url[:100]}")
                 verified = await _handle_codebuddy_email_verification(page)
                 if verified:
@@ -2801,6 +2810,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                     continue
 
             if await _handle_google_gaplustos(page):
+                _last_progress_at = time.monotonic()  # progress: clicked gaplustos
                 if "gaplustos" not in _progress_emitted:
                     _emit_oauth_progress("Google security check — confirming identity")
                     _progress_emitted.add("gaplustos")
@@ -2808,6 +2818,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 continue
 
             if await _handle_google_consent_continue(page):
+                _last_progress_at = time.monotonic()  # progress: clicked consent
                 if "consent" not in _progress_emitted:
                     _emit_oauth_progress("Google consent — granting access")
                     _progress_emitted.add("consent")
@@ -2876,6 +2887,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 continue
 
             if on_codebuddy_region:
+                _last_progress_at = time.monotonic()  # progress: on region page
                 region_ok = await _ensure_region_with_retry(
                     page, account.identifier, max_retries=3
                 )
@@ -2895,11 +2907,13 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 continue
 
             if on_codebuddy_login:
+                _last_progress_at = time.monotonic()  # progress: on login page
                 await _handle_codebuddy_landing(page)
 
             # When redirected back to CodeBuddy home after a Google timeout/re-auth,
             # need to click ToS checkbox + Google login button again to restart the flow.
             if on_codebuddy_home and now >= landing_transition_deadline:
+                _last_progress_at = time.monotonic()  # progress: retrying landing
                 _codebuddy_auth_debug(
                     f"codebuddy home detected (path={current_path!r}), re-triggering landing click"
                 )
@@ -2956,6 +2970,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                 at_account_picker = await _is_google_account_picker(google_target)
 
             if on_google_auth and at_account_picker:
+                _last_progress_at = time.monotonic()  # progress: account picker visible
                 if "picker" not in _progress_emitted:
                     _emit_oauth_progress("Google OAuth — selecting account")
                     _progress_emitted.add("picker")
@@ -2979,6 +2994,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
 
             email_filled = False
             if on_google_auth and at_email_step and not at_password_step:
+                _last_progress_at = time.monotonic()  # progress: email step visible
                 if "email" not in _progress_emitted:
                     _emit_oauth_progress("Google OAuth — entering email")
                     _progress_emitted.add("email")
@@ -3003,6 +3019,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
 
             password_filled = False
             if on_google_auth and at_password_step:
+                _last_progress_at = time.monotonic()  # progress: password step visible
                 if "password" not in _progress_emitted:
                     _emit_oauth_progress("Google OAuth — entering password")
                     _progress_emitted.add("password")
