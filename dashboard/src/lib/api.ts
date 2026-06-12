@@ -244,6 +244,98 @@ export async function applyIntegrationConfig(baseUrl: string): Promise<ApplyConf
   });
 }
 
+// ── Multi-Client Integration ─────────────────────────────────────
+
+export interface ClientMetaDTO {
+  id: string;
+  name: string;
+  description: string;
+  cli: string;
+  url: string;
+  detected: boolean;
+  configPaths: string[];
+}
+
+export interface IntegrationModelDTO {
+  id: string;
+  owned_by: string;
+  context_window?: number;
+  max_output?: number;
+  thinking?: boolean;
+  vision?: boolean;
+}
+
+export interface IntegrationClientsData {
+  clients: ClientMetaDTO[];
+  models: IntegrationModelDTO[];
+}
+
+export interface ClientConfigPreviewDTO {
+  client: string;
+  success: boolean;
+  preview?: Record<string, unknown>;
+  paths: string[];
+  backupPaths: string[];
+  error?: string;
+}
+
+export interface ApplyClientResult {
+  client: string;
+  success: boolean;
+  paths: string[];
+  backupPaths: string[];
+  error?: string;
+}
+
+export interface ApplyAllResult {
+  success: boolean;
+  results: ApplyClientResult[];
+}
+
+export async function fetchIntegrationClients(): Promise<IntegrationClientsData> {
+  return fetchApi("/api/integration/clients");
+}
+
+export async function fetchClientConfigPreview(
+  clientId: string,
+  baseUrl: string,
+  modelId?: string
+): Promise<ClientConfigPreviewDTO> {
+  return fetchApi(`/api/integration/clients/${clientId}/preview`, {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function applyClientConfig(
+  clientId: string,
+  baseUrl: string,
+  modelId?: string
+): Promise<ApplyClientResult> {
+  return fetchApi(`/api/integration/clients/${clientId}/apply`, {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function applyAllClients(
+  baseUrl: string,
+  modelId?: string
+): Promise<ApplyAllResult> {
+  return fetchApi("/api/integration/apply-all", {
+    method: "POST",
+    body: JSON.stringify({ baseUrl, modelId }),
+  });
+}
+
+export async function restoreClientConfig(
+  clientId: string
+): Promise<{ success: boolean; path?: string; restoredFrom?: string; error?: string }> {
+  return fetchApi(`/api/integration/clients/${clientId}/restore`, {
+    method: "POST",
+  });
+}
+
 export async function fetchSettings() {
   return fetchApi("/api/settings");
 }

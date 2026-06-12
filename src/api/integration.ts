@@ -5,6 +5,15 @@ import { asc, eq } from "drizzle-orm";
 import { invalidateModelMappingCache } from "../proxy/model-mapping";
 import { getAllModels } from "../proxy/router";
 import { broadcast } from "../ws/index";
+import {
+  getClientList,
+  generateClientConfig,
+  applyClientConfig,
+  applyAllClients,
+  type ClientTarget,
+  type ProxyConnectionInfo,
+} from "../lib/client-configs/index";
+import { CLIENT_META } from "../lib/client-configs/types";
 
 export const integrationRouter = new Hono();
 
@@ -178,6 +187,181 @@ integrationRouter.post("/apply-config", async (c) => {
     console.error("[Integration] Failed to apply config:", error);
     return c.json(
       { success: false, error: error.message || "Failed to apply configuration" },
+      500
+    );
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Multi-Client Integration Endpoints
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Build a ProxyConnectionInfo from the request body + server config.
+ * The frontend sends the base URL it already resolved since the server
+ * may not know its own public-facing address (proxied, tunnelled, etc.).
+ */
+async function buildProxyInfo(body: {
+  baseUrl?: string;
+  modelId?: string;
+}): Promise<ProxyConnectionInfo> {
+  const { config } = await import("../config");
+  const apiKeyRow = await db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, "api_key"));
+  const apiKey =
+    apiKeyRow[0]?.value || process.env.API_KEY || "pool-proxy-secret-key";
+  const proxyOrigin = body.baseUrl || `http://localhost:${config.port}`;
+  const openaiBaseUrl = `${proxyOrigin}/v1`;
+  const modelId = body.modelId || "kp-sonnet-4.6";
+
+  // Build lightweight model list for config generators
+  const models = getAllModels().map((m) => ({
+    id: m.id,
+    name: m.id,
+    maxInputTokens: m.context_window ?? 200000,
+    maxOutputTokens: m.max_output ?? 32000,
+    inputTypes: m.vision
+      ? ["text", "image"]
+      : m.thinking
+        ? ["text"]
+        : ["text"],
+  }));
+
+  return { proxyOrigin, openaiBaseUrl, apiKey, modelId, models };
+}
+
+/**
+ * GET /api/integration/clients - list of supported clients with detection status.
+ */
+integrationRouter.get("/clients", async (c) => {
+  try {
+    const clients = getClientList();
+    const models = getAllModels().map((m) => ({
+      id: m.id,
+      owned_by: m.owned_by,
+      context_window: m.context_window,
+      max_output: m.max_output,
+      thinking: m.thinking,
+      vision: m.vision,
+    }));
+    return c.json({ clients, models });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+/**
+ * POST /api/integration/clients/:clientId/preview - preview config without writing.
+ */
+integrationRouter.post("/clients/:clientId/preview", async (c) => {
+  const clientId = c.req.param("clientId") as ClientTarget;
+  if (!CLIENT_META[clientId]) {
+    return c.json({ error: `Unknown client: ${clientId}` }, 404);
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const info = await buildProxyInfo(body);
+    info.preview = true;
+    const result = await generateClientConfig(clientId, info);
+    return c.json(result);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+/**
+ * POST /api/integration/clients/:clientId/apply - write config to disk.
+ */
+integrationRouter.post("/clients/:clientId/apply", async (c) => {
+  const clientId = c.req.param("clientId") as ClientTarget;
+  if (!CLIENT_META[clientId]) {
+    return c.json({ error: `Unknown client: ${clientId}` }, 404);
+  }
+
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const info = await buildProxyInfo(body);
+    const result = await applyClientConfig(clientId, info);
+    return c.json(result);
+  } catch (error: any) {
+    console.error(`[Integration] Failed to apply config for ${clientId}:`, error);
+    return c.json(
+      { success: false, error: error.message || "Failed to apply configuration" },
+      500
+    );
+  }
+});
+
+/**
+ * POST /api/integration/apply-all - apply config to all detected clients.
+ */
+integrationRouter.post("/apply-all", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const info = await buildProxyInfo(body);
+    const results = await applyAllClients(info);
+    return c.json({ success: true, results });
+  } catch (error: any) {
+    console.error("[Integration] Failed to apply all configs:", error);
+    return c.json(
+      { success: false, error: error.message || "Failed to apply all configurations" },
+      500
+    );
+  }
+});
+
+/**
+ * POST /api/integration/clients/:clientId/restore - restore config from backup.
+ * Looks for the most recent .etteum-backup-* file and copies it back.
+ */
+integrationRouter.post("/clients/:clientId/restore", async (c) => {
+  const clientId = c.req.param("clientId") as ClientTarget;
+  if (!CLIENT_META[clientId]) {
+    return c.json({ error: `Unknown client: ${clientId}` }, 404);
+  }
+
+  try {
+    const fs = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const { getPrimaryConfigPath } = await import(
+      "../lib/client-configs/paths"
+    );
+    const configPath = getPrimaryConfigPath(clientId);
+    const dir = pathMod.dirname(configPath);
+
+    // Find most recent backup
+    let files: string[] = [];
+    try {
+      files = await fs.readdir(dir);
+    } catch {
+      return c.json({ success: false, error: "Config directory not found" }, 404);
+    }
+
+    const backups = files
+      .filter((f) => f.startsWith(pathMod.basename(configPath) + ".etteum-backup-"))
+      .sort()
+      .reverse();
+
+    if (backups.length === 0) {
+      return c.json({ success: false, error: "No backup found" }, 404);
+    }
+
+    const latestBackup = pathMod.join(dir, backups[0]!);
+    await fs.copyFile(latestBackup, configPath);
+    await fs.unlink(latestBackup);
+
+    return c.json({
+      success: true,
+      path: configPath,
+      restoredFrom: latestBackup,
+    });
+  } catch (error: any) {
+    console.error(`[Integration] Failed to restore config for ${clientId}:`, error);
+    return c.json(
+      { success: false, error: error.message || "Failed to restore configuration" },
       500
     );
   }
