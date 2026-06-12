@@ -16,6 +16,11 @@ import aiohttp
 from app.errors.codes import ErrorCode
 from app.errors.exceptions import NonRetryableBatcherError, RetryableBatcherError
 from app.providers.base import NormalizedAccount, ProviderAdapter
+from app.providers.browser_utils import (
+    OAUTH_FIREFOX_PREFS,
+    build_camoufox_kwargs,
+    is_browser_crash,
+)
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -1818,59 +1823,19 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
                     "codebuddy auth/state missing state or authUrl",
                 )
 
-            from browserforge.fingerprints import Screen
             from camoufox.async_api import AsyncCamoufox
 
-            camoufox_kwargs = {
-                "headless": os.getenv("BATCHER_CAMOUFOX_HEADLESS", "true").lower() == "true",
-                "os": "windows",
-                "block_webrtc": True,
-                "disable_coop": True,
-                "i_know_what_im_doing": True,
-                "humanize": False,
-                "screen": Screen(max_width=1920, max_height=1080),
-                "firefox_user_prefs": {
-                    # Disable COOP/COEP at all levels to prevent crashes during OAuth redirects
-                    "browser.tabs.remote.useCrossOriginOpenerPolicy": False,
-                    "browser.tabs.remote.useCrossOriginEmbedderPolicy": False,
-                    # Disable process isolation that causes crashes on cross-origin navigations
-                    "fission.autostart": False,
-                    "fission.webContentIsolationStrategy": 0,
-                    # Disable crash reporter and session restore prompts
-                    "toolkit.crashreporter.enabled": False,
-                    "browser.sessionstore.resume_from_crash": False,
-                    "browser.tabs.crashReporting.sendReport": False,
-                    # Reduce memory pressure that can cause OOM crashes in headless
-                    "javascript.options.mem.gc_allocation_threshold_mb": 512,
-                    "javascript.options.mem.high_water_mark": 128,
-                    # Disable background tasks that can interfere
-                    "app.update.enabled": False,
-                    "browser.safebrowsing.enabled": False,
-                    "browser.safebrowsing.malware.enabled": False,
-                    # Network stability
-                    "network.http.connection-timeout": 60,
-                    "network.http.response.timeout": 120,
-                    "dom.ipc.processHangMonitor": False,
-                },
-            }
-            proxy_url = _get_proxy_url()
-            if proxy_url:
-                from urllib.parse import urlparse as _urlparse
-
-                _parsed = _urlparse(proxy_url)
-                _proxy_cfg = {
-                    "server": f"{_parsed.scheme}://{_parsed.hostname}:{_parsed.port}"
-                }
-                if _parsed.username:
-                    _proxy_cfg["username"] = _parsed.username
-                if _parsed.password:
-                    _proxy_cfg["password"] = _parsed.password
-                camoufox_kwargs["proxy"] = _proxy_cfg
-                camoufox_kwargs["geoip"] = True
+            camoufox_kwargs = build_camoufox_kwargs(
+                proxy_url=_get_proxy_url() or "",
+                default_timeout=30000,
+                disable_coop=True,
+                firefox_user_prefs=OAUTH_FIREFOX_PREFS,
+            )
+            timeout_ms = camoufox_kwargs.pop("_default_timeout")
             manager = AsyncCamoufox(**camoufox_kwargs)
             browser = await manager.__aenter__()
             page = await browser.new_page()
-            page.set_default_timeout(30000)
+            page.set_default_timeout(timeout_ms)
             await page.goto(auth_url, wait_until="domcontentloaded", timeout=45000)
 
             return {
@@ -1922,51 +1887,19 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
             except Exception:
                 pass
 
-        from browserforge.fingerprints import Screen
         from camoufox.async_api import AsyncCamoufox
 
-        camoufox_kwargs = {
-            "headless": os.getenv("BATCHER_CAMOUFOX_HEADLESS", "true").lower() == "true",
-            "os": "windows",
-            "block_webrtc": True,
-            "disable_coop": True,
-            "i_know_what_im_doing": True,
-            "humanize": False,
-            "screen": Screen(max_width=1920, max_height=1080),
-            "firefox_user_prefs": {
-                "browser.tabs.remote.useCrossOriginOpenerPolicy": False,
-                "browser.tabs.remote.useCrossOriginEmbedderPolicy": False,
-                "fission.autostart": False,
-                "fission.webContentIsolationStrategy": 0,
-                "toolkit.crashreporter.enabled": False,
-                "browser.sessionstore.resume_from_crash": False,
-                "browser.tabs.crashReporting.sendReport": False,
-                "javascript.options.mem.gc_allocation_threshold_mb": 512,
-                "javascript.options.mem.high_water_mark": 128,
-                "app.update.enabled": False,
-                "browser.safebrowsing.enabled": False,
-                "browser.safebrowsing.malware.enabled": False,
-                "network.http.connection-timeout": 60,
-                "network.http.response.timeout": 120,
-                "dom.ipc.processHangMonitor": False,
-            },
-        }
-        proxy_url = _get_proxy_url()
-        if proxy_url:
-            from urllib.parse import urlparse as _urlparse
-            _parsed = _urlparse(proxy_url)
-            _proxy_cfg = {"server": f"{_parsed.scheme}://{_parsed.hostname}:{_parsed.port}"}
-            if _parsed.username:
-                _proxy_cfg["username"] = _parsed.username
-            if _parsed.password:
-                _proxy_cfg["password"] = _parsed.password
-            camoufox_kwargs["proxy"] = _proxy_cfg
-            camoufox_kwargs["geoip"] = True
-
+        camoufox_kwargs = build_camoufox_kwargs(
+            proxy_url=_get_proxy_url() or "",
+            default_timeout=15000,
+            disable_coop=True,
+            firefox_user_prefs=OAUTH_FIREFOX_PREFS,
+        )
+        timeout_ms = camoufox_kwargs.pop("_default_timeout")
         new_manager = AsyncCamoufox(**camoufox_kwargs)
         new_browser = await new_manager.__aenter__()
         page = await new_browser.new_page()
-        page.set_default_timeout(15000)
+        page.set_default_timeout(timeout_ms)
         await page.goto(auth_url, wait_until="domcontentloaded", timeout=25000)
 
         session["manager"] = new_manager
@@ -2012,17 +1945,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
             try:
                 return await self._authenticate_inner(account, session, page, state)
             except Exception as exc:
-                exc_str = str(exc).lower()
-                is_connection_closed = (
-                    "connection closed" in exc_str
-                    or "connection closed while reading" in exc_str
-                    or "browser has been closed" in exc_str
-                    or "target closed" in exc_str
-                    or "browser.close" in exc_str
-                    or "execution context was destroyed" in exc_str
-                    or "context was destroyed" in exc_str
-                    or "navigation" in exc_str and "destroyed" in exc_str
-                )
+                is_connection_closed = is_browser_crash(exc)
                 if is_connection_closed and _browser_crash_retries < _max_browser_crash_retries:
                     _browser_crash_retries += 1
                     _codebuddy_auth_debug(
@@ -2501,14 +2424,7 @@ class CodeBuddyProviderAdapter(ProviderAdapter):
             try:
                 return await self._fetch_tokens_inner(page, session, state, account)
             except Exception as exc:
-                exc_str = str(exc).lower()
-                is_connection_closed = (
-                    "connection closed" in exc_str
-                    or "browser has been closed" in exc_str
-                    or "target closed" in exc_str
-                    or "execution context was destroyed" in exc_str
-                    or "context was destroyed" in exc_str
-                )
+                is_connection_closed = is_browser_crash(exc)
                 if is_connection_closed and _token_attempt < 2:
                     _codebuddy_auth_debug(
                         f"browser crash in fetch_tokens (attempt {_token_attempt+1}/3): {str(exc)[:100]}"
