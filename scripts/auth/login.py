@@ -40,6 +40,18 @@ def retry_delay(attempt: int) -> float:
     return min(BASE_DELAY * (2**attempt), MAX_DELAY)
 
 
+def _has_valid_quota(quota) -> bool:
+    """Check if quota result contains usable credit data."""
+    if not isinstance(quota, dict):
+        return False
+    total = (
+        quota.get("total_credits")
+        or quota.get("limit")
+        or quota.get("credit_capacity_size")
+        or quota.get("credit_total_dosage")
+    )
+    return total is not None and float(total) > 0
+
 
 async def _run_provider_once(adapter, account: NormalizedAccount) -> dict:
     provider_name = adapter.name
@@ -142,6 +154,14 @@ async def _run_provider_once(adapter, account: NormalizedAccount) -> dict:
                     "step": "quota_skip",
                     "message": f"Quota fetch skipped: {e}",
                 }
+            )
+
+        # Codebuddy: quota is mandatory — without it the account is unusable
+        # (warmup will misidentify it as exhausted). Retry from scratch.
+        if provider_name == "codebuddy" and not _has_valid_quota(quota):
+            raise RetryableBatcherError(
+                ErrorCode.provider_token_exchange_failed,
+                "codebuddy login succeeded but quota fetch failed — retrying",
             )
 
         # Post-login hook (e.g., kiro-pro auto-upgrade)
