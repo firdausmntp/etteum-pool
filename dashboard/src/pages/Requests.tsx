@@ -26,6 +26,22 @@ interface RequestLog {
   errorMessage: string | null;
   requestBody?: unknown;
   responseBody?: unknown;
+  compressionStats?: CompressionStats | null;
+}
+
+interface CompressionStats {
+  tokensBefore: number;
+  tokensAfter: number;
+  saved: number;
+  savedPct: number;
+  byTechnique?: {
+    rtk?: number;
+    dcp?: number;
+    caveman?: number;
+    imageDedupe?: number;
+    cacheMarkers?: number;
+  };
+  durationMs: number;
 }
 
 function getCreditMeta(req: RequestLog) {
@@ -197,6 +213,8 @@ export default function Requests() {
               {typeof getCreditMeta(selected).creditRate === "number" && <> · Rate: <span className="text-[var(--foreground)]">{getCreditMeta(selected).creditRate}</span></>}
             </div>
 
+            {selected.compressionStats && <CompressionPanel stats={selected.compressionStats} />}
+
             <div className="mt-5 space-y-1">
               <p className="text-xs uppercase text-[var(--muted-foreground)]">Account</p>
               <p className="text-sm font-medium text-[var(--foreground)]">{selected.accountEmail || `#${selected.accountId}`}</p>
@@ -224,6 +242,72 @@ function Metric({ label, value, color }: { label: string; value: string | number
     yellow: "bg-[var(--warning)]/10 text-[var(--warning)]",
   };
   return <div className={`rounded-md p-3 ${colors[color]}`}><p className="text-[10px] uppercase opacity-80">{label}</p><p className="font-bold">{value}</p></div>;
+}
+
+const TECHNIQUE_LABELS: Record<keyof NonNullable<CompressionStats["byTechnique"]>, string> = {
+  rtk: "RTK (tool truncation)",
+  dcp: "DCP (dedup)",
+  caveman: "Caveman (system prompt)",
+  imageDedupe: "Image dedup",
+  cacheMarkers: "Cache markers",
+};
+
+function formatNum(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+function CompressionPanel({ stats }: { stats: CompressionStats }) {
+  const { tokensBefore, tokensAfter, saved, savedPct, byTechnique = {}, durationMs } = stats;
+  const techEntries = Object.entries(byTechnique).filter(([, v]) => typeof v === "number" && v > 0) as Array<
+    [keyof typeof TECHNIQUE_LABELS, number]
+  >;
+
+  // No real savings on this request — show a muted "ran but no-op" line.
+  if (saved <= 0) {
+    return (
+      <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--secondary)]/40 p-3 text-xs text-[var(--muted-foreground)]">
+        <span className="uppercase tracking-wide">Compression</span>
+        <span className="ml-2">Pipeline ran in {durationMs}ms — no compressible content this turn.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--success)]/30 bg-[var(--success)]/5 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-[10px] uppercase tracking-wide text-[var(--success)]">Compression</p>
+        <p className="text-[10px] text-[var(--muted-foreground)]">Pipeline {durationMs}ms</p>
+      </div>
+
+      <div className="mt-2 flex items-baseline gap-2">
+        <span className="text-xl font-bold text-[var(--success)]">−{formatNum(saved)}</span>
+        <span className="text-xs text-[var(--muted-foreground)]">tokens saved</span>
+        <span className="ml-auto text-sm font-semibold text-[var(--success)]">{savedPct.toFixed(2)}%</span>
+      </div>
+
+      <div className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+        {formatNum(tokensBefore)} <span className="opacity-50">→</span> {formatNum(tokensAfter)} tokens
+      </div>
+
+      {techEntries.length > 0 && (
+        <div className="mt-3 space-y-1 border-t border-[var(--border)] pt-2">
+          <p className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">By technique</p>
+          {techEntries.map(([key, value]) => {
+            const pct = saved > 0 ? (value / saved) * 100 : 0;
+            return (
+              <div key={key} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 text-[var(--foreground)]">{TECHNIQUE_LABELS[key]}</span>
+                <div className="h-1 w-16 overflow-hidden rounded-full bg-[var(--border)]">
+                  <div className="h-full bg-[var(--success)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                </div>
+                <span className="w-16 text-right text-[var(--muted-foreground)]">−{formatNum(value)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
