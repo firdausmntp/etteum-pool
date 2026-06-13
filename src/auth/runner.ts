@@ -600,34 +600,6 @@ export async function loginAccount(account: Account, options: LoginOptions = {})
       }
     }
 
-    // Codebuddy: quota is mandatory — without valid quota the account is unusable
-    // (warmup will misidentify it as exhausted). Treat as retryable failure.
-    if (account.provider === "codebuddy" && quotaLimit <= 0) {
-      const quotaError = "Login succeeded but quota fetch failed (billing API error) — retrying";
-      const log = addAuthLog({
-        type: "login_failed",
-        accountId: account.id,
-        email: account.email,
-        provider,
-        error: quotaError,
-        message: quotaError,
-      });
-      broadcast({
-        type: "login_failed",
-        data: { logId: log.id, id: account.id, email: account.email, provider, error: quotaError },
-      });
-      // Save tokens so next retry can potentially use them, but don't mark active
-      await db
-        .update(accounts)
-        .set({
-          tokens: credentials as unknown,
-          metadata: { ...quotaMetadata, quotaRetryReason: quotaError } as unknown,
-          updatedAt: new Date(),
-        })
-        .where(eq(accounts.id, account.id));
-      return { success: false, error: quotaError };
-    }
-
     await db
       .update(accounts)
       .set({
