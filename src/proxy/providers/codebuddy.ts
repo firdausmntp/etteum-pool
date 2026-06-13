@@ -29,9 +29,19 @@ const AGENT_SYSTEM_PROMPT_PATTERNS: RegExp[] = [
   /cc_entrypoint\s*=\s*(?:cli|vscode|jetbrains|gui)/i,
   /claude.?code.+issues/i,
   /give feedback.+claude.?code/i,
+  // OpenCode / OhMyOpenCode / Sisyphus agent
+  /you are .{0,30}(?:powerful )?ai agent/i,
+  /orchestration capabilities/i,
+  /OhMyOpenCode/i,
+  // Generic: any system prompt with agent-like XML tags
+  /<agent-identity>/i,
+  /<Role>/i,
+  /<Behavior_Instructions>/i,
+  // Generic: very long system prompts (>2000 chars) are almost always agent prompts
 ];
 
 function isAgentSystemPrompt(content: string): boolean {
+  if (content.length > 2000) return true;
   return AGENT_SYSTEM_PROMPT_PATTERNS.some((pattern) => pattern.test(content));
 }
 
