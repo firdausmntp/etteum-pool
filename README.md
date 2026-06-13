@@ -14,6 +14,7 @@
 - **Automatic Load Balancing** — Distributes requests across healthy accounts
 - **Credit Tracking** — Real-time quota monitoring and exhaustion detection
 - **Auto-Warmup** — Periodic health checks to keep accounts ready
+- **Token Compression** — RTK / DCP / Caveman / Cache Markers / Image Dedupe pipeline ([docs](docs/compression.md))
 - **Dashboard** — Beautiful web UI for monitoring and management
 - **Proxy Pool** — Optional residential proxy support for geo-restricted providers
 - **WebSocket Updates** — Real-time status updates in the dashboard

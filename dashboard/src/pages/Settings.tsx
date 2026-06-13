@@ -341,56 +341,123 @@ export default function Settings() {
         {/* Compression — token saver pipeline */}
         <Card className="border-[var(--border)] lg:col-span-2">
           <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Wand2 className="w-4 h-4 text-[var(--primary)]" />
-              Compression
-            </CardTitle>
-            <CardDescription>
-              Reduce token usage by compressing tool outputs, deduplicating context, and shortening prompts. Pipeline runs in order: DCP → RTK → Caveman → Image Dedupe → Cache Markers.
-            </CardDescription>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Wand2 className="w-4 h-4 text-[var(--primary)]" />
+                  Compression
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  Reduce token usage by compressing tool outputs, deduplicating context, and shortening prompts. Pipeline runs in order: DCP → RTK → Caveman → Image Dedupe → Cache Markers.
+                </CardDescription>
+              </div>
+              <a
+                href="https://github.com/priyo000/etteum-pool/blob/main/docs/compression.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-[var(--primary)] hover:underline shrink-0 mt-1"
+                title="Open the compression docs"
+              >
+                docs ↗
+              </a>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* RTK */}
             <CompressionRow
               title="RTK"
               subtitle="Tool Result Compression"
-              description="Truncates large tool outputs (git diff, grep, file reads) in OLDER turns. The last N turns are passed through untouched so the model still sees fresh context."
+              description="Truncates large tool outputs (git diff, grep, file reads) in OLDER turns. The last N turns are passed through untouched so the model still sees fresh context. Defaults below are sensible — you only need to tune them for unusual workloads."
               enabled={form.compression_rtk_enabled === "true"}
               onToggle={(v) => setValue("compression_rtk_enabled", v ? "true" : "false")}
             >
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+              <div className="space-y-3 mt-3">
+                {/* Quick presets */}
                 <div>
-                  <label className="text-xs text-[var(--muted-foreground)]">Max chars per tool result</label>
-                  <Input
-                    type="number"
-                    min={500}
-                    max={50000}
-                    step={500}
-                    value={form.compression_rtk_max_tool_chars || "4000"}
-                    onChange={(e) => setValue("compression_rtk_max_tool_chars", e.target.value)}
-                    className="mt-1"
-                  />
+                  <div className="text-[11px] uppercase tracking-wide text-[var(--muted-foreground)] mb-1">
+                    Quick preset
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(
+                      [
+                        { name: "Conservative", chars: "8000", turns: "3", hint: "Bigger budget, more context kept. ~3% saving." },
+                        { name: "Balanced", chars: "4000", turns: "2", hint: "Recommended default. ~6% saving." },
+                        { name: "Aggressive", chars: "2000", turns: "1", hint: "Smaller cap, only last turn protected. ~12% saving but model may miss older details." },
+                      ] as const
+                    ).map((preset) => {
+                      const selected =
+                        form.compression_rtk_max_tool_chars === preset.chars &&
+                        form.compression_rtk_keep_last_n_turns_full === preset.turns;
+                      return (
+                        <button
+                          key={preset.name}
+                          type="button"
+                          title={preset.hint}
+                          onClick={() => {
+                            setValue("compression_rtk_max_tool_chars", preset.chars);
+                            setValue("compression_rtk_keep_last_n_turns_full", preset.turns);
+                          }}
+                          className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors text-left ${
+                            selected
+                              ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+                              : "border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                          }`}
+                        >
+                          <div>{preset.name}</div>
+                          <div className="text-[10px] mt-0.5 opacity-70">
+                            {preset.chars} chars · keep {preset.turns}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div>
-                  <label className="text-xs text-[var(--muted-foreground)]">Keep last N turns full</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={20}
-                    value={form.compression_rtk_keep_last_n_turns_full || "2"}
-                    onChange={(e) => setValue("compression_rtk_keep_last_n_turns_full", e.target.value)}
-                    className="mt-1"
-                  />
-                </div>
-                <div className="flex items-end">
-                  <label className="flex items-center gap-2 text-xs text-[var(--foreground)]">
-                    <input
-                      type="checkbox"
-                      checked={form.compression_rtk_smart_truncate === "true"}
-                      onChange={(e) => setValue("compression_rtk_smart_truncate", e.target.checked ? "true" : "false")}
+
+                {/* Fine-grained controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[var(--border)]">
+                  <div>
+                    <label className="text-xs text-[var(--muted-foreground)]">Max chars per tool result</label>
+                    <Input
+                      type="number"
+                      min={500}
+                      max={50000}
+                      step={500}
+                      value={form.compression_rtk_max_tool_chars || "4000"}
+                      onChange={(e) => setValue("compression_rtk_max_tool_chars", e.target.value)}
+                      className="mt-1"
                     />
-                    Smart truncate (git diff / tree)
-                  </label>
+                    <p className="text-[10px] text-[var(--muted-foreground)] mt-1 leading-relaxed">
+                      Cap on each older tool_result. ~4 chars = 1 token, so 4000 ≈ 1000 tokens. Default: <code>4000</code>.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-[var(--muted-foreground)]">Keep last N turns full</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={20}
+                      value={form.compression_rtk_keep_last_n_turns_full || "2"}
+                      onChange={(e) => setValue("compression_rtk_keep_last_n_turns_full", e.target.value)}
+                      className="mt-1"
+                    />
+                    <p className="text-[10px] text-[var(--muted-foreground)] mt-1 leading-relaxed">
+                      The last N user/assistant pairs are passed through untouched. Lower = more saving, higher = safer. Default: <code>2</code>.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-[var(--muted-foreground)]">Smart truncate</label>
+                    <label className="mt-1 flex items-center gap-2 h-9 px-3 rounded-md border border-[var(--border)] bg-[var(--background)] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={form.compression_rtk_smart_truncate === "true"}
+                        onChange={(e) => setValue("compression_rtk_smart_truncate", e.target.checked ? "true" : "false")}
+                      />
+                      <span className="text-xs text-[var(--foreground)]">Pattern-aware</span>
+                    </label>
+                    <p className="text-[10px] text-[var(--muted-foreground)] mt-1 leading-relaxed">
+                      Recognises git diff (keep hunk headers) and tree output (keep depth ≤ 2). Default: <code>on</code>.
+                    </p>
+                  </div>
                 </div>
               </div>
             </CompressionRow>
