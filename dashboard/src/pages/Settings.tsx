@@ -411,28 +411,48 @@ export default function Settings() {
               description="Strips filler words and compacts the system prompt. ⚠️ Off by default — aggressive levels can change model behaviour. Test with your own prompts before enabling Full or Ultra."
               enabled={form.compression_caveman_enabled === "true"}
               onToggle={(v) => setValue("compression_caveman_enabled", v ? "true" : "false")}
+              alwaysShowChildren
             >
-              {form.compression_caveman_enabled === "true" && (
-                <div className="grid grid-cols-3 gap-2 mt-3">
-                  {(["lite", "full", "ultra"] as const).map((lvl) => (
-                    <button
-                      key={lvl}
-                      type="button"
-                      onClick={() => setValue("compression_caveman_level", lvl)}
-                      className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
-                        form.compression_caveman_level === lvl
-                          ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
-                          : "border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                      }`}
-                    >
-                      <div className="capitalize">{lvl}</div>
-                      <div className="text-[10px] mt-0.5 opacity-70">
-                        {lvl === "lite" ? "Drop filler" : lvl === "full" ? "Bullet form" : "Telegraphic"}
-                      </div>
-                    </button>
-                  ))}
+              <div className="mt-3 space-y-2">
+                <div className="text-[11px] uppercase tracking-wide text-[var(--muted-foreground)]">
+                  Compression level
                 </div>
-              )}
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { lvl: "lite", title: "Lite", subtitle: "Drop filler", hint: "~5–15% saving · safest" },
+                      { lvl: "full", title: "Full", subtitle: "Bullet form", hint: "~30–50% saving · moderate risk" },
+                      { lvl: "ultra", title: "Ultra", subtitle: "Telegraphic", hint: "~50–70% saving · may degrade output" },
+                    ] as const
+                  ).map(({ lvl, title, subtitle, hint }) => {
+                    const selected = form.compression_caveman_level === lvl;
+                    return (
+                      <button
+                        key={lvl}
+                        type="button"
+                        onClick={() => setValue("compression_caveman_level", lvl)}
+                        title={hint}
+                        className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors text-left ${
+                          selected
+                            ? "border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]"
+                            : "border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                        }`}
+                      >
+                        <div>{title}</div>
+                        <div className="text-[10px] mt-0.5 opacity-70">{subtitle}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-[var(--muted-foreground)] leading-relaxed">
+                  {form.compression_caveman_level === "lite" &&
+                    "Lite: removes politeness fillers (\"please\", \"make sure to\") and verbose connectors. Sentence structure preserved. Saves ~5–15%."}
+                  {form.compression_caveman_level === "full" &&
+                    "Full: lite + collapses narrative connectors (\"furthermore\", \"that being said\"), drops \"the following\" lead-ins, simplifies if/when clauses. Saves ~30–50%. Test before deploying."}
+                  {form.compression_caveman_level === "ultra" &&
+                    "Ultra: full + drops articles (a/an/the), drops modal helpers (you can/may/might), forces imperative voice. Saves ~50–70% but may degrade model behaviour. Use only after benchmarking."}
+                </p>
+              </div>
             </CompressionRow>
 
             {/* Cache Markers */}
@@ -466,6 +486,7 @@ function CompressionRow({
   enabled,
   onToggle,
   children,
+  alwaysShowChildren = false,
 }: {
   title: string;
   subtitle: string;
@@ -473,6 +494,8 @@ function CompressionRow({
   enabled: boolean;
   onToggle: (v: boolean) => void;
   children?: React.ReactNode;
+  /** When true, children render even when toggle is off (visually dimmed). */
+  alwaysShowChildren?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/40 p-4">
@@ -494,7 +517,11 @@ function CompressionRow({
           <div className="w-10 h-5 bg-[var(--border)] peer-checked:bg-[var(--primary)] rounded-full transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-transform peer-checked:after:translate-x-5"></div>
         </label>
       </div>
-      {enabled && children}
+      {children && (alwaysShowChildren || enabled) && (
+        <div className={alwaysShowChildren && !enabled ? "opacity-50 pointer-events-none" : ""}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
