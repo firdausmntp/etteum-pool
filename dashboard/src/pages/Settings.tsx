@@ -44,6 +44,10 @@ export default function Settings() {
     compression_caveman_level: "lite",
     compression_cache_markers_enabled: "true",
     compression_image_dedupe_enabled: "true",
+    compression_tsc_enabled: "true",
+    compression_tsc_strip_schema_whitespace: "true",
+    compression_tsc_trim_descriptions: "true",
+    compression_tsc_drop_schema_meta: "true",
   });
   const [warmupStatus, setWarmupStatus] = useState<AutoWarmupStatus | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -535,6 +539,15 @@ export default function Settings() {
               description="When the same image is attached more than once in a request, later occurrences are replaced with a reference stub. Lossless — the image is still in earlier context."
               enabled={form.compression_image_dedupe_enabled === "true"}
               onToggle={(v) => setValue("compression_image_dedupe_enabled", v ? "true" : "false")}
+            />
+
+            {/* TSC — Tool Schema Compaction */}
+            <CompressionRow
+              title="TSC"
+              subtitle="Tool Schema Compaction"
+              description="Lossless compaction of the tools[] array — strips JSON-Schema metadata ($schema, $id, additionalProperties:false) and collapses whitespace runs in tool descriptions. Provider-agnostic; runs first in pipeline. Typical agent traffic: 5-15% saving."
+              enabled={form.compression_tsc_enabled === "true"}
+              onToggle={(v) => setValue("compression_tsc_enabled", v ? "true" : "false")}
             />
           </CardContent>
         </Card>

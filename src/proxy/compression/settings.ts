@@ -14,6 +14,10 @@
  *   compression_cache_markers_enabled       "true" | "false"
  *   compression_cache_markers_overrides     JSON object {provider: bool}
  *   compression_image_dedupe_enabled        "true" | "false"
+ *   compression_tsc_enabled                 "true" | "false"
+ *   compression_tsc_strip_schema_whitespace "true" | "false"
+ *   compression_tsc_trim_descriptions       "true" | "false"
+ *   compression_tsc_drop_schema_meta        "true" | "false"
  */
 
 import { db } from "../../db/index";
@@ -122,6 +126,18 @@ async function loadFromDb(): Promise<CompressionConfig> {
     },
     imageDedupe: {
       enabled: parseBool(map.get("compression_image_dedupe_enabled"), dflt.imageDedupe.enabled),
+    },
+    tsc: {
+      enabled: parseBool(map.get("compression_tsc_enabled"), dflt.tsc.enabled),
+      stripSchemaWhitespace: parseBool(
+        map.get("compression_tsc_strip_schema_whitespace"),
+        dflt.tsc.stripSchemaWhitespace
+      ),
+      trimDescriptions: parseBool(
+        map.get("compression_tsc_trim_descriptions"),
+        dflt.tsc.trimDescriptions
+      ),
+      dropSchemaMeta: parseBool(map.get("compression_tsc_drop_schema_meta"), dflt.tsc.dropSchemaMeta),
     },
   };
 }

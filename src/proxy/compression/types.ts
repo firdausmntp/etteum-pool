@@ -47,12 +47,26 @@ export interface ImageDedupeConfig {
   enabled: boolean;
 }
 
+export interface TSCConfig {
+  enabled: boolean;
+  /** Strip whitespace from tool JSON-schema (lossless). */
+  stripSchemaWhitespace: boolean;
+  /** Trim repeated whitespace from tool descriptions (>= 2 spaces / blank lines). */
+  trimDescriptions: boolean;
+  /**
+   * Drop $schema, $id, additionalProperties:false noise from tool input_schema.
+   * Lossless w.r.t. tool semantics (model never reads these fields).
+   */
+  dropSchemaMeta: boolean;
+}
+
 export interface CompressionConfig {
   rtk: RTKConfig;
   dcp: DCPConfig;
   caveman: CavemanConfig;
   cacheMarkers: CacheMarkerConfig;
   imageDedupe: ImageDedupeConfig;
+  tsc: TSCConfig;
 }
 
 export type CompressionTechnique =
@@ -60,7 +74,8 @@ export type CompressionTechnique =
   | "dcp"
   | "caveman"
   | "imageDedupe"
-  | "cacheMarkers";
+  | "cacheMarkers"
+  | "tsc";
 
 export interface CompressionStats {
   /** Estimated tokens before compression. */
@@ -100,6 +115,12 @@ export const DEFAULT_COMPRESSION_CONFIG: CompressionConfig = {
   },
   imageDedupe: {
     enabled: true,
+  },
+  tsc: {
+    enabled: true,
+    stripSchemaWhitespace: true,
+    trimDescriptions: true,
+    dropSchemaMeta: true,
   },
 };
 

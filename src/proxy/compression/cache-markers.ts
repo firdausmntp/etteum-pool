@@ -73,13 +73,24 @@ export function applyCacheMarkers(
     }
   }
 
-  // Tools as secondary cache anchor (Anthropic supports cache_control on tools).
-  if (!tagged && Array.isArray(next.tools) && next.tools.length > 0) {
+  // Tools as cache anchor — Anthropic spec: cache_control on the LAST tool tags
+  // the entire `tools` array prefix. So we always try to tag tools too (in addition
+  // to system), because the Anthropic cache breakpoint logic treats the prefix
+  // up-to-and-including the marker as one cacheable chunk.
+  if (Array.isArray(next.tools) && next.tools.length > 0) {
     const last = next.tools[next.tools.length - 1];
     const stableJson = JSON.stringify(last || {});
     if (!looksUnstable(stableJson)) {
-      next.tools = [...next.tools.slice(0, -1), tagBlockEphemeral(last)];
-      tagged = true;
+      // Skip if the tool already has cache_control or is OpenAI-flavor
+      // wrapped in {type:"function", function:{...}} — for OpenAI shape, upstream
+      // (Codebuddy/Codex) translate to Anthropic at their edge, but cache_control
+      // belongs at the Anthropic-shape level. Tag the outer object — providers
+      // that don't care will silently ignore.
+      const lastObj = last as any;
+      if (!lastObj?.cache_control) {
+        next.tools = [...next.tools.slice(0, -1), tagBlockEphemeral(last)];
+        tagged = true;
+      }
     }
   }
 

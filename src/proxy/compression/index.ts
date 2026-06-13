@@ -21,6 +21,7 @@ import { applyDCP } from "./dcp";
 import { applyCaveman } from "./caveman";
 import { applyCacheMarkers } from "./cache-markers";
 import { applyImageDedupe } from "./image-dedupe";
+import { applyTSC } from "./tsc";
 import { estimateRequestTokens } from "./token-estimate";
 
 export type { CompressionConfig, CompressionStats, CompressionTechnique } from "./types";
@@ -54,6 +55,14 @@ export function compressRequest(
 
   const byTechnique: Partial<Record<CompressionTechnique, number>> = {};
   let current = request;
+
+  // 0. TSC — lossless tool-schema compaction. Runs first because it's cheap,
+  //    provider-agnostic, and never interacts with messages/system.
+  if (cfg.tsc?.enabled) {
+    const r = applyTSC(current, cfg.tsc);
+    if (r.saved > 0) byTechnique.tsc = charsToTokens(r.saved);
+    current = r.request;
+  }
 
   // 1. DCP
   if (cfg.dcp.enabled) {

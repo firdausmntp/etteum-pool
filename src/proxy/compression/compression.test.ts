@@ -23,6 +23,7 @@ import { applyDCP } from "./dcp";
 import { applyCaveman, compactText } from "./caveman";
 import { applyCacheMarkers } from "./cache-markers";
 import { applyImageDedupe } from "./image-dedupe";
+import { applyTSC } from "./tsc";
 import type { ChatCompletionRequest } from "../providers/base";
 
 function bigString(n: number): string {
@@ -425,6 +426,112 @@ describe("compressRequest — orchestrator", () => {
     const newSys = (request as any).system;
     expect(Array.isArray(newSys)).toBe(true);
     expect(newSys.some((b: any) => b.cache_control)).toBe(true);
+  });
+
+  it("TSC strips schema metadata from Anthropic-flavor tools", () => {
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [{ role: "user", content: "hi" }],
+      ...({
+        tools: [
+          {
+            name: "Read",
+            description: "Reads   a    file.\n\n\n\nAnd  some  more.",
+            input_schema: {
+              $schema: "http://json-schema.org/draft-07/schema#",
+              $id: "Read",
+              type: "object",
+              additionalProperties: false,
+              properties: { path: { type: "string" } },
+            },
+          },
+        ],
+      } as any),
+    };
+    const cfg = {
+      enabled: true,
+      stripSchemaWhitespace: true,
+      trimDescriptions: true,
+      dropSchemaMeta: true,
+    };
+    const { request, saved } = applyTSC(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    const t = (request as any).tools[0];
+    expect(t.input_schema.$schema).toBeUndefined();
+    expect(t.input_schema.$id).toBeUndefined();
+    expect(t.input_schema.additionalProperties).toBeUndefined();
+    expect(t.input_schema.properties.path.type).toBe("string"); // structure preserved
+    expect(t.description).not.toContain("    "); // double-spaces collapsed
+    expect(t.description).not.toContain("\n\n\n"); // blank-line runs collapsed
+  });
+
+  it("TSC handles OpenAI-flavor tools (type:function)", () => {
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [{ role: "user", content: "hi" }],
+      ...({
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "search",
+              description: "Search   the   web.",
+              parameters: {
+                $schema: "http://json-schema.org/draft-07/schema#",
+                type: "object",
+                additionalProperties: false,
+                properties: { q: { type: "string" } },
+              },
+            },
+          },
+        ],
+      } as any),
+    };
+    const cfg = {
+      enabled: true,
+      stripSchemaWhitespace: true,
+      trimDescriptions: true,
+      dropSchemaMeta: true,
+    };
+    const { request, saved } = applyTSC(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    const fn = (request as any).tools[0].function;
+    expect(fn.parameters.$schema).toBeUndefined();
+    expect(fn.parameters.additionalProperties).toBeUndefined();
+    expect(fn.description).toBe("Search the web.");
+    expect(fn.parameters.properties.q.type).toBe("string");
+  });
+
+  it("TSC noop when no tools array", () => {
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [{ role: "user", content: "hi" }],
+    };
+    const { saved } = applyTSC(req, {
+      enabled: true,
+      stripSchemaWhitespace: true,
+      trimDescriptions: true,
+      dropSchemaMeta: true,
+    });
+    expect(saved).toBe(0);
+  });
+
+  it("TSC disabled -> no change", () => {
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [{ role: "user", content: "hi" }],
+      ...({
+        tools: [{ name: "x", description: "  spaced  ", input_schema: { $schema: "x", type: "object" } }],
+      } as any),
+    };
+    const { request, saved } = applyTSC(req, {
+      enabled: false,
+      stripSchemaWhitespace: true,
+      trimDescriptions: true,
+      dropSchemaMeta: true,
+    });
+    expect(saved).toBe(0);
+    expect(request).toBe(req); // referential identity preserved
   });
 
   it("emptyStats produces zero everywhere", () => {
