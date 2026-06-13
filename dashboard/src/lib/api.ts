@@ -200,6 +200,15 @@ export async function fetchRequests(page: number = 1, limit: number = 50, provid
   return fetchApi(`/api/stats/requests?${params.toString()}`);
 }
 
+/**
+ * Fetch full detail (including heavy requestBody / responseBody) for a single
+ * request log. Used by the Requests page detail drawer so the list endpoint
+ * can stay lightweight.
+ */
+export async function fetchRequestDetail(id: number) {
+  return fetchApi<{ data: unknown }>(`/api/stats/requests/${id}`);
+}
+
 export async function fetchModels() {
   return fetchApi("/v1/models");
 }

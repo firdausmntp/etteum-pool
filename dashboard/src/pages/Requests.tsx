@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Search, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchRequests } from "@/lib/api";
+import { fetchRequests, fetchRequestDetail } from "@/lib/api";
 import { formatDateTimeID } from "@/lib/utils";
 import { useWsEvent } from "@/hooks/useWebSocket";
 
@@ -68,8 +68,31 @@ export default function Requests() {
   const [provider, setProvider] = useState("all");
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<RequestLog | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [page, setPage] = useState(1);
   const perPage = 25;
+
+  /**
+   * Open the detail drawer for a row. The list endpoint omits the heavy
+   * requestBody / responseBody columns to keep the page snappy, so we lazily
+   * fetch the full record here. We immediately show what we already have so
+   * the drawer feels instant, then fill in the bodies once they arrive.
+   */
+  async function openDetail(req: RequestLog) {
+    setSelected(req);
+    if (req.requestBody !== undefined && req.responseBody !== undefined) return;
+    setDetailLoading(true);
+    try {
+      const res = (await fetchRequestDetail(req.id)) as { data: RequestLog };
+      if (res?.data) {
+        setSelected((current) => (current?.id === req.id ? { ...current, ...res.data } : current));
+      }
+    } catch {
+      // best-effort; leave bodies undefined and let the UI render empty blocks
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -153,7 +176,7 @@ export default function Requests() {
               </thead>
               <tbody>
                 {filtered.slice((page - 1) * perPage, page * perPage).map((req) => (
-                  <tr key={req.id} onClick={() => setSelected(req)} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 cursor-pointer">
+                  <tr key={req.id} onClick={() => openDetail(req)} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/50 cursor-pointer">
                     <td className="p-4 text-xs text-[var(--muted-foreground)] font-mono">{formatDateTimeID(req.createdAt)}</td>
                     <td className="p-4 text-sm text-[var(--foreground)]">{labelProvider(req.provider)}</td>
                     <td className="p-4 text-sm text-[var(--foreground)] hidden md:table-cell">{req.model || "-"}</td>
@@ -233,8 +256,16 @@ export default function Requests() {
               <div className="mt-5 rounded-md bg-[var(--error)]/10 p-3 text-sm text-[var(--error)]">{selected.errorMessage}</div>
             )}
 
-            <JsonBlock title="Request Body" value={selected.requestBody} />
-            <JsonBlock title="Response Body" value={selected.responseBody} />
+            {detailLoading && selected.requestBody === undefined ? (
+              <div className="mt-5 flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
+                <RefreshCw className="w-3 h-3 animate-spin" /> Loading request & response body…
+              </div>
+            ) : (
+              <>
+                <JsonBlock title="Request Body" value={selected.requestBody} />
+                <JsonBlock title="Response Body" value={selected.responseBody} />
+              </>
+            )}
           </aside>
         </div>
       )}
