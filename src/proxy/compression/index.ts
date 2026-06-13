@@ -72,9 +72,16 @@ export function compressRequest(
   }
 
   // 2. RTK
+  let rtkFilters: Record<string, number> | undefined;
   if (cfg.rtk.enabled) {
     const r = applyRTK(current, cfg.rtk);
     if (r.saved > 0) byTechnique.rtk = charsToTokens(r.saved);
+    if (r.hits.length > 0) {
+      rtkFilters = {};
+      for (const h of r.hits) {
+        rtkFilters[h.filter] = (rtkFilters[h.filter] ?? 0) + charsToTokens(h.saved);
+      }
+    }
     current = r.request;
   }
 
@@ -110,6 +117,7 @@ export function compressRequest(
       saved,
       savedPct,
       byTechnique,
+      ...(rtkFilters ? { rtkFilters } : {}),
       durationMs: Date.now() - t0,
     },
   };

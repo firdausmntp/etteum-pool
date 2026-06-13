@@ -166,6 +166,132 @@ describe("RTK — tool-result truncation", () => {
     const { saved } = applyRTK(req, { ...DEFAULT_COMPRESSION_CONFIG.rtk, enabled: false });
     expect(saved).toBe(0);
   });
+
+  it("git-status filter categorises porcelain output", () => {
+    const status = [
+      "## main",
+      ...Array.from({ length: 25 }, (_, i) => ` M src/file_${i}.ts`),
+      ...Array.from({ length: 18 }, (_, i) => `?? new_${i}.txt`),
+      "UU src/conflict.ts",
+    ].join("\n");
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [
+        { role: "user", content: "status" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "u1", name: "Bash", input: { cmd: "git status -s" } }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "u1", content: status }] },
+        { role: "user", content: "ok" },
+        { role: "assistant", content: "k" },
+        { role: "user", content: "y" },
+        { role: "assistant", content: "y" },
+      ],
+    };
+    const cfg = { enabled: true, maxToolChars: 600, keepLastNTurnsFull: 2, smartTruncate: true };
+    const { request, saved, hits } = applyRTK(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    expect(hits.find((h) => h.filter === "git-status")).toBeDefined();
+    const out = (request.messages[2]!.content as any[])[0].content as string;
+    expect(out).toContain("Modified:");
+    expect(out).toContain("Untracked:");
+    expect(out).toContain("+15 more"); // 25 modified, top 10 shown, 15 elided
+    expect(out).toContain("conflicts:");
+  });
+
+  it("read-numbered filter trims long Read output keeping line range", () => {
+    const numbered = Array.from({ length: 600 }, (_, i) => `${i + 1}→  some content here for line ${i + 1}`).join("\n");
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [
+        { role: "user", content: "read" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "u1", name: "Read", input: { file_path: "/big.ts" } }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "u1", content: numbered }] },
+        { role: "user", content: "ok" },
+        { role: "assistant", content: "k" },
+        { role: "user", content: "y" },
+        { role: "assistant", content: "y" },
+      ],
+    };
+    const cfg = { enabled: true, maxToolChars: 2000, keepLastNTurnsFull: 2, smartTruncate: true };
+    const { request, saved, hits } = applyRTK(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    expect(hits.find((h) => h.filter === "read-numbered")).toBeDefined();
+    const out = (request.messages[2]!.content as any[])[0].content as string;
+    expect(out).toContain("elided");
+    // First few lines preserved literally
+    expect(out).toContain("1→");
+    // Last lines preserved literally
+    expect(out).toContain("600→");
+  });
+
+  it("grep filter aggregates per-file matches", () => {
+    const lines: string[] = ["Result of search in 'src' (total 3 files):"];
+    for (let i = 1; i <= 25; i++) lines.push(`src/foo.ts:${i}:matched ${i}`);
+    for (let i = 1; i <= 12; i++) lines.push(`src/bar.ts:${i}:hit ${i}`);
+    for (let i = 1; i <= 4; i++) lines.push(`src/baz.ts:${i}:single ${i}`);
+    const grep = lines.join("\n");
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [
+        { role: "user", content: "grep" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "u1", name: "Grep", input: { pattern: "x" } }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "u1", content: grep }] },
+        { role: "user", content: "ok" },
+        { role: "assistant", content: "k" },
+        { role: "user", content: "y" },
+        { role: "assistant", content: "y" },
+      ],
+    };
+    const cfg = { enabled: true, maxToolChars: 800, keepLastNTurnsFull: 2, smartTruncate: true };
+    const { request, saved, hits } = applyRTK(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    expect(hits.find((h) => h.filter === "grep")).toBeDefined();
+    const out = (request.messages[2]!.content as any[])[0].content as string;
+    expect(out).toContain("[src/foo.ts]");
+    expect(out).toContain("+20 more"); // 25 in foo.ts, top 5 shown
+    expect(out).toContain("Result of search"); // header preserved
+  });
+
+  it("dedup-log filter collapses runs of identical lines", () => {
+    const log = [
+      "Building...",
+      ...Array(40).fill("  resolving deps"),
+      "Compiling foo.ts",
+      ...Array(15).fill("  caching"),
+      "Done.",
+    ].join("\n");
+    const req: ChatCompletionRequest = {
+      model: "test",
+      messages: [
+        { role: "user", content: "build" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "u1", name: "Bash", input: { cmd: "build" } }],
+        },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "u1", content: log }] },
+        { role: "user", content: "ok" },
+        { role: "assistant", content: "k" },
+        { role: "user", content: "y" },
+        { role: "assistant", content: "y" },
+      ],
+    };
+    const cfg = { enabled: true, maxToolChars: 600, keepLastNTurnsFull: 2, smartTruncate: true };
+    const { request, saved, hits } = applyRTK(req, cfg);
+    expect(saved).toBeGreaterThan(0);
+    expect(hits.find((h) => h.filter === "dedup-log")).toBeDefined();
+    const out = (request.messages[2]!.content as any[])[0].content as string;
+    expect(out).toContain("duplicate line");
+    expect(out).toContain("Building...");
+    expect(out).toContain("Done.");
+  });
 });
 
 // ─── DCP ──────────────────────────────────────────────────────────────────

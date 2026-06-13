@@ -88,6 +88,12 @@ export interface CompressionStats {
   savedPct: number;
   /** Per-technique tokens saved (only includes techniques that ran). */
   byTechnique: Partial<Record<CompressionTechnique, number>>;
+  /**
+   * Per-shape-filter savings inside RTK (e.g. "git-diff", "dedup-log",
+   * "read-numbered", "generic"). Aggregated across all tool_result blocks
+   * touched in this request.
+   */
+  rtkFilters?: Record<string, number>;
   /** Wall-clock duration of the pipeline in ms. */
   durationMs: number;
 }

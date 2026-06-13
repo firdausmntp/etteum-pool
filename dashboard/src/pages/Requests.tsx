@@ -42,6 +42,8 @@ interface CompressionStats {
     imageDedupe?: number;
     cacheMarkers?: number;
   };
+  /** Per-shape-filter savings inside RTK (only present when RTK fired). */
+  rtkFilters?: Record<string, number>;
   durationMs: number;
 }
 
@@ -263,6 +265,16 @@ function formatNum(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+const RTK_FILTER_LABELS: Record<string, string> = {
+  "git-diff": "git diff (hunks)",
+  "git-status": "git status",
+  tree: "tree (depth ≤ 1)",
+  "read-numbered": "Read (line-numbered)",
+  grep: "grep (per-file)",
+  "dedup-log": "dedup-log",
+  generic: "generic head + tail",
+};
+
 function CompressionPanel({
   stats,
   promptTokens,
@@ -270,10 +282,13 @@ function CompressionPanel({
   stats: CompressionStats;
   promptTokens: number | null;
 }) {
-  const { tokensBefore, tokensAfter, saved, byTechnique = {}, durationMs } = stats;
+  const { tokensBefore, tokensAfter, saved, byTechnique = {}, rtkFilters, durationMs } = stats;
   const techEntries = Object.entries(byTechnique).filter(([, v]) => typeof v === "number" && v > 0) as Array<
     [keyof typeof TECHNIQUE_LABELS, number]
   >;
+  const filterEntries: Array<[string, number]> = rtkFilters
+    ? Object.entries(rtkFilters).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
+    : [];
 
   // Best practice: anchor the displayed before/after to provider-reported
   // prompt_tokens (ground truth) instead of our char/4 heuristic. Our internal
@@ -342,6 +357,29 @@ function CompressionPanel({
             );
           })}
         </div>
+      )}
+
+      {filterEntries.length > 0 && (
+        <details className="mt-2 group">
+          <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+            RTK filters ({filterEntries.length}) <span className="opacity-50 group-open:hidden">▸</span><span className="opacity-50 hidden group-open:inline">▾</span>
+          </summary>
+          <div className="mt-1 space-y-1">
+            {filterEntries.map(([name, value]) => {
+              const rtkTotal = byTechnique.rtk ?? 0;
+              const pct = rtkTotal > 0 ? (value / rtkTotal) * 100 : 0;
+              return (
+                <div key={name} className="flex items-center gap-2 text-[11px]">
+                  <span className="flex-1 pl-2 text-[var(--muted-foreground)]">{RTK_FILTER_LABELS[name] ?? name}</span>
+                  <div className="h-1 w-16 overflow-hidden rounded-full bg-[var(--border)]">
+                    <div className="h-full bg-[var(--success)]/60" style={{ width: `${Math.min(100, pct)}%` }} />
+                  </div>
+                  <span className="w-16 text-right text-[var(--muted-foreground)]">−{formatNum(value)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </details>
       )}
     </div>
   );
