@@ -51,8 +51,9 @@ export class ByokProvider extends BaseProvider {
   override isFallback = false;
   override nativeFormat: "openai" | "anthropic" = "openai";
 
-  // Synchronous prefix → account cache (required for ownsModel sync check)
-  private prefixCache = new Map<string, CachedByokAccount>();
+  // Synchronous prefix -> account cache (required for ownsModel sync check)
+  private prefixCache = new Map<string, CachedByokAccount[]>();
+  private roundRobinCounters = new Map<string, number>();
   private prefixes: string[] = [];
   private cacheExpiry = 0;
   private readonly CACHE_TTL = 10_000; // 10 seconds
@@ -82,7 +83,7 @@ export class ByokProvider extends BaseProvider {
       .where(eq(accounts.provider, "byok"));
 
     // Build new data in temporary variables first to avoid race condition
-    const newPrefixCache = new Map<string, CachedByokAccount>();
+    const newPrefixCache = new Map<string, CachedByokAccount[]>();
     const newPrefixes: string[] = [];
     const newSupportedModels: ModelInfo[] = [];
 
@@ -99,8 +100,10 @@ export class ByokProvider extends BaseProvider {
       const prefix = tokens.model_prefix || account.email;
       const expiresAt = Date.now() + this.CACHE_TTL;
 
-      newPrefixCache.set(prefix, { account, config: tokens, expiresAt });
-      newPrefixes.push(prefix);
+      const existing = newPrefixCache.get(prefix) ?? [];
+      existing.push({ account, config: tokens, expiresAt });
+      newPrefixCache.set(prefix, existing);
+      if (!newPrefixes.includes(prefix)) newPrefixes.push(prefix);
 
       for (const model of tokens.models) {
         newSupportedModels.push({
@@ -119,6 +122,7 @@ export class ByokProvider extends BaseProvider {
     this.prefixes = newPrefixes;
     this.supportedModels = newSupportedModels;
     this.cacheExpiry = Date.now() + this.CACHE_TTL;
+    this.roundRobinCounters.clear();
   }
 
   /** Ensure cache is fresh, refreshing if stale. */
@@ -211,7 +215,12 @@ export class ByokProvider extends BaseProvider {
     await this.ensureCache();
     const prefix = this.findPrefix(model);
     if (!prefix) return null;
-    return this.prefixCache.get(prefix)?.account ?? null;
+    const entries = this.prefixCache.get(prefix) ?? [];
+    if (entries.length === 0) return null;
+    const counter = this.roundRobinCounters.get(prefix) ?? 0;
+    const entry = entries[counter % entries.length]!;
+    this.roundRobinCounters.set(prefix, counter + 1);
+    return entry.account;
   }
 
   /** Get all BYOK models for /v1/models endpoint. */

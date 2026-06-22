@@ -28,7 +28,7 @@ vccRouter.get("/pool", async (c) => {
       return {
         id: card.id,
         last4: card.number.slice(-4),
-        bin: card.number.slice(0, 6),
+        bin: card.bin ?? card.number.slice(0, 6),
         brand,
         exp: `${card.expMonth}/${card.expYear.slice(-2)}`,
         name: card.name || "John Doe",
@@ -62,6 +62,7 @@ vccRouter.post("/pool", async (c) => {
 
     await db.insert(vccCards).values({
       number,
+      bin: number.slice(0, 8),
       expMonth,
       expYear,
       cvv: card.cvv,
@@ -181,6 +182,7 @@ export async function handleCardResult(
   await db.insert(vccTransactions).values({
     accountId,
     cardLast4,
+    cardBin: match ? (match.bin ?? match.number.slice(0, 6)) : undefined,
     amount: 0,
     currency: "usd",
     status,

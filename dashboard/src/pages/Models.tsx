@@ -1,8 +1,17 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Cpu, Copy, Check, Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Cpu, Copy, Check, Search, Plus, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchModels } from "@/lib/api";
+import { fetchModels, fetchIntegration, saveIntegration, type ModelMappingDTO } from "@/lib/api";
 import { useTimedMessage } from "@/hooks/useTimedMessage";
 
 interface ModelData {
@@ -31,12 +40,48 @@ function formatNumber(n: number | undefined): string {
   return String(n);
 }
 
+const MATCH_TYPES = ["exact", "prefix", "contains", "regex"] as const;
+
+type MappingForm = {
+  sourcePattern: string;
+  matchType: string;
+  targetModel: string;
+  enabled: boolean;
+  priority: number;
+  label: string;
+};
+
 export default function Models() {
   const [models, setModels] = useState<ModelData[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const { message: copiedModel, setMessage: setCopiedModel } = useTimedMessage<string>(null, 1500);
+
+  // Mappings state
+  const [mappings, setMappings] = useState<ModelMappingDTO[]>([]);
+  const [loadingMappings, setLoadingMappings] = useState(false);
+  const [mappingDialogOpen, setMappingDialogOpen] = useState(false);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [mappingForm, setMappingForm] = useState<MappingForm>({
+    sourcePattern: "",
+    matchType: "exact",
+    targetModel: "",
+    enabled: true,
+    priority: 0,
+    label: "",
+  });
+  const [savingMappings, setSavingMappings] = useState(false);
+
+  const loadMappings = async () => {
+    setLoadingMappings(true);
+    try {
+      const data = await fetchIntegration();
+      setMappings(data.mappings ?? []);
+    } finally {
+      setLoadingMappings(false);
+    }
+  };
 
   useEffect(() => {
     fetchModels()
@@ -45,7 +90,66 @@ export default function Models() {
       })
       .catch(() => setModels([]))
       .finally(() => setLoading(false));
+    loadMappings();
   }, []);
+
+  const handleAddMapping = () => {
+    setEditingIndex(null);
+    setMappingForm({ sourcePattern: "", matchType: "exact", targetModel: "", enabled: true, priority: 0, label: "" });
+    setMappingDialogOpen(true);
+  };
+
+  const handleEditMapping = (m: ModelMappingDTO, index: number) => {
+    setEditingIndex(index);
+    setMappingForm({
+      sourcePattern: m.sourcePattern,
+      matchType: m.matchType,
+      targetModel: m.targetModel,
+      enabled: m.enabled,
+      priority: m.priority,
+      label: m.label ?? "",
+    });
+    setMappingDialogOpen(true);
+  };
+
+  const handleDeleteMapping = async (index: number) => {
+    const next = mappings.filter((_, i) => i !== index);
+    setMappings(next);
+    await saveIntegration({ mappings: next });
+  };
+
+  const handleToggleMapping = async (index: number) => {
+    const next = mappings.map((m, i) =>
+      i === index ? { ...m, enabled: !m.enabled } : m
+    );
+    setMappings(next);
+    await saveIntegration({ mappings: next });
+  };
+
+  const handleSaveMapping = async () => {
+    setSavingMappings(true);
+    try {
+      const entry: ModelMappingDTO = {
+        sourcePattern: mappingForm.sourcePattern,
+        matchType: mappingForm.matchType,
+        targetModel: mappingForm.targetModel,
+        enabled: mappingForm.enabled,
+        priority: mappingForm.priority,
+        label: mappingForm.label || null,
+      };
+      let next: ModelMappingDTO[];
+      if (editingIndex !== null) {
+        next = mappings.map((m, i) => (i === editingIndex ? entry : m));
+      } else {
+        next = [...mappings, entry];
+      }
+      await saveIntegration({ mappings: next });
+      setMappings(next);
+      setMappingDialogOpen(false);
+    } finally {
+      setSavingMappings(false);
+    }
+  };
 
   const providers = ["all", ...Array.from(new Set(models.map((m) => m.owned_by)))];
 
@@ -211,6 +315,162 @@ export default function Models() {
           )}
         </CardContent>
       </Card>
+
+      {/* Model Mappings CRUD */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold">Model Mappings</h2>
+            <p className="text-sm text-[var(--muted-foreground)]">Remap incoming model names to different targets</p>
+          </div>
+          <Button onClick={handleAddMapping} size="sm">
+            <Plus className="w-4 h-4 mr-2" /> Add Mapping
+          </Button>
+        </div>
+
+        {loadingMappings ? (
+          <div className="text-sm text-[var(--muted-foreground)]">Loading...</div>
+        ) : mappings.length === 0 ? (
+          <div className="text-sm text-[var(--muted-foreground)] border rounded-lg p-6 text-center">
+            No model mappings configured.
+          </div>
+        ) : (
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--muted)]/50">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium">Source Pattern</th>
+                  <th className="text-left px-4 py-2 font-medium">Match Type</th>
+                  <th className="text-left px-4 py-2 font-medium">Target Model</th>
+                  <th className="text-left px-4 py-2 font-medium">Priority</th>
+                  <th className="text-left px-4 py-2 font-medium">Label</th>
+                  <th className="text-left px-4 py-2 font-medium">Enabled</th>
+                  <th className="text-right px-4 py-2 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappings.map((m, i) => (
+                  <tr key={i} className="border-t hover:bg-[var(--muted)]/20 transition-colors">
+                    <td className="px-4 py-2 font-mono text-xs">{m.sourcePattern}</td>
+                    <td className="px-4 py-2">
+                      <Badge variant="outline" className="text-xs">{m.matchType}</Badge>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs">{m.targetModel}</td>
+                    <td className="px-4 py-2 text-[var(--muted-foreground)]">{m.priority}</td>
+                    <td className="px-4 py-2 text-[var(--muted-foreground)]">{m.label || "—"}</td>
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleMapping(i)}
+                        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                          m.enabled ? "bg-[var(--primary)]" : "bg-[var(--muted-foreground)]/30"
+                        }`}
+                        aria-label={m.enabled ? "Disable" : "Enable"}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                            m.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                          }`}
+                        />
+                      </button>
+                    </td>
+                    <td className="px-4 py-2 text-right space-x-1">
+                      <Button variant="ghost" size="icon" onClick={() => handleEditMapping(m, i)}>
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleDeleteMapping(i)}>
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit Mapping Dialog */}
+      <Dialog open={mappingDialogOpen} onOpenChange={setMappingDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editingIndex !== null ? "Edit Mapping" : "Add Mapping"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Source Pattern</label>
+              <Input
+                value={mappingForm.sourcePattern}
+                onChange={(e) => setMappingForm((f) => ({ ...f, sourcePattern: e.target.value }))}
+                placeholder="gpt-4o"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Match Type</label>
+              <select
+                value={mappingForm.matchType}
+                onChange={(e) => setMappingForm((f) => ({ ...f, matchType: e.target.value }))}
+                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {MATCH_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Target Model</label>
+              <Input
+                value={mappingForm.targetModel}
+                onChange={(e) => setMappingForm((f) => ({ ...f, targetModel: e.target.value }))}
+                placeholder="glm-5.2-free"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Priority</label>
+              <Input
+                type="number"
+                value={String(mappingForm.priority)}
+                onChange={(e) => setMappingForm((f) => ({ ...f, priority: Number(e.target.value) }))}
+                placeholder="0"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Label (optional)</label>
+              <Input
+                value={mappingForm.label}
+                onChange={(e) => setMappingForm((f) => ({ ...f, label: e.target.value }))}
+                placeholder="my-mapping"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMappingForm((f) => ({ ...f, enabled: !f.enabled }))}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                  mappingForm.enabled ? "bg-[var(--primary)]" : "bg-[var(--muted-foreground)]/30"
+                }`}
+                aria-label="Toggle enabled"
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                    mappingForm.enabled ? "translate-x-[18px]" : "translate-x-[3px]"
+                  }`}
+                />
+              </button>
+              <label className="text-sm font-medium">Enabled</label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMappingDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handleSaveMapping}
+              disabled={savingMappings || !mappingForm.sourcePattern || !mappingForm.targetModel}
+            >
+              {savingMappings ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

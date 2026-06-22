@@ -123,11 +123,11 @@ authRouter.post("/bulk-add", async (c) => {
     return c.json({ error: "accounts array is required" }, 400);
   }
 
-  const providers = body.providers || ["kiro", "kiro-pro", "codebuddy", "canva", "codex"];
+  const providers = body.providers || ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"];
 
   // Validate providers
   const validProviders = providers.filter((p) =>
-    ["kiro", "kiro-pro", "codebuddy", "canva", "codex"].includes(p)
+    ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"].includes(p)
   );
 
   if (validProviders.length === 0) {

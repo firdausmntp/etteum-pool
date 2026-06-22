@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -41,10 +41,15 @@ import {
   warmupAllAccounts,
   type AutoWarmupStatus,
   type ByokProvider,
+  addMimoAccount,
+  deleteMimoAccount,
+  testMimoAccount,
+  bulkLoginMimo,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { JoinTeamModal } from "@/components/canva/JoinTeamModal";
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo";
 
 interface Account {
   id: number;
@@ -55,18 +60,20 @@ interface Account {
   quotaRemaining?: number;
 }
 
-const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"];
+const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "mimo"];
 
 function labelProvider(provider: string) {
   if (provider === "kiro-pro") return "Kiro Pro";
   if (provider === "codebuddy") return "CodeBuddy";
   if (provider === "codex") return "Codex";
   if (provider === "qoder") return "Qoder";
+  if (provider === "mimo") return "MiMo";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 export default function Accounts() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -103,11 +110,19 @@ export default function Accounts() {
     api_key: "",
     format: "auto" as "openai" | "anthropic" | "auto",
     models: "",
+    model_prefix: "", // used for pre-filling "add another key" under same prefix
   });
   const [expandedByokId, setExpandedByokId] = useState<number | null>(null);
   const [byokTestResults, setByokTestResults] = useState<
     Map<string, { status: 'testing' | 'success' | 'error'; latencyMs?: number; error?: string }>
   >(new Map());
+  const [mimoForm, setMimoForm] = useState({ email: "", api_key: "", referralCode: "M8C7QK" });
+  const [mimoRegisterMode, setMimoRegisterMode] = useState<"manual" | "auto">("manual");
+  const [mimoBulkText, setMimoBulkText] = useState("");
+  const [mimoBulkResults, setMimoBulkResults] = useState<Array<{ email: string; success: boolean; id?: number; error?: string }> | null>(null);
+  const [mimoBulkReferralCode, setMimoBulkReferralCode] = useState("M8C7QK");
+  const [mimoConcurrency, setMimoConcurrency] = useState(2);
+
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codexOauthPopupRef = useRef<Window | null>(null);
   const codexOauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -136,6 +151,7 @@ export default function Accounts() {
       // Load BYOK providers
       const byokRes = await fetchByokProviders();
       setByokProviders(byokRes.providers || []);
+
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -149,6 +165,14 @@ export default function Accounts() {
     return () => {
       if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    const addProvider = searchParams.get("addProvider");
+    if (addProvider && (providers as string[]).includes(addProvider)) {
+      handleOpenAddDialog(addProvider as Provider);
+      setSearchParams({}, { replace: true });
+    }
   }, []);
 
   useEffect(() => {
@@ -267,6 +291,7 @@ export default function Accounts() {
     const byokRes = await fetchByokProviders();
     setByokProviders(byokRes.providers || []);
   });
+
 
   async function handleToggleAutoWarmup(provider: Provider) {
     const key = `auto_warmup_provider_${provider}`;
@@ -611,13 +636,45 @@ export default function Accounts() {
     await load();
   }
 
+  async function handleAddMimo() {
+    if (!mimoForm.email.trim() || !mimoForm.api_key.trim()) {
+      showError(new Error("Email and API key are required"));
+      return;
+    }
+    try {
+      await addMimoAccount({
+        email: mimoForm.email.trim(),
+        api_key: mimoForm.api_key.trim(),
+        ...(mimoForm.referralCode.trim() ? { referral_code: mimoForm.referralCode.trim() } : {}),
+      });
+      showSuccess("MiMo account added successfully");
+      setMimoForm({ email: "", api_key: "", referralCode: "M8C7QK" });
+      setAddDialogProvider(null);
+      await load();
+    } catch (err) { showError(err); }
+  }
+
+  async function handleMimoBulkLogin() {
+    const lines = mimoBulkText.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) { showError(new Error("Paste at least one email:password line")); return; }
+    try {
+      const res = await bulkLoginMimo(lines, mimoBulkReferralCode.trim() || undefined, mimoConcurrency);
+      setMimoBulkResults(res.results);
+      showSuccess(`MiMo: ${res.queued}/${res.total} accounts queued for auto-register`);
+      setMimoBulkText("");
+      setMimoBulkReferralCode("M8C7QK");
+      setMimoConcurrency(2);
+      await load();
+    } catch (err) { showError(err); }
+  }
+
   async function handleAddByok() {
     if (!byokForm.label || !byokForm.base_url || !byokForm.api_key || !byokForm.models) {
       showError(new Error("All fields are required"));
       return;
     }
 
-    const models = byokForm.models.split(",").map(m => m.trim()).filter(Boolean);
+    const models = byokForm.models.split("\n").map(m => m.trim()).filter(Boolean);
     if (models.length === 0) {
       showError(new Error("At least one model is required"));
       return;
@@ -632,7 +689,7 @@ export default function Accounts() {
         models,
       });
       showSuccess(`BYOK provider "${byokForm.label}" created successfully`);
-      setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "" });
+      setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "", model_prefix: "" });
       setByokEditId(null);
       setByokDialogOpen(false);
       await load();
@@ -648,14 +705,14 @@ export default function Accounts() {
       return;
     }
 
-    const models = byokForm.models.split(",").map(m => m.trim()).filter(Boolean);
+    const models = byokForm.models.split("\n").map(m => m.trim()).filter(Boolean);
     if (models.length === 0) {
       showError(new Error("At least one model is required"));
       return;
     }
 
     try {
-      const updateData: any = {
+      const updateData: Parameters<typeof updateByokProvider>[1] = {
         base_url: byokForm.base_url,
         format: byokForm.format,
         models,
@@ -668,7 +725,7 @@ export default function Accounts() {
 
       await updateByokProvider(byokEditId, updateData);
       showSuccess(`BYOK provider "${byokForm.label}" updated successfully`);
-      setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "" });
+      setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "", model_prefix: "" });
       setByokEditId(null);
       setByokDialogOpen(false);
       await load();
@@ -676,8 +733,7 @@ export default function Accounts() {
       showError(err);
     }
   }
-
-  const BYOK_KEY_PLACEHOLDER = "••••••••";
+  const BYOK_KEY_PLACEHOLDER = "__EXISTING_KEY__";
 
   function handleEditByok(provider: ByokProvider) {
     setByokEditId(provider.id);
@@ -686,15 +742,29 @@ export default function Accounts() {
       base_url: provider.base_url,
       api_key: BYOK_KEY_PLACEHOLDER, // Show masked indicator that key exists
       format: provider.format,
-      models: provider.models.join(", "),
+      models: provider.models.join("\n"),
+      model_prefix: provider.model_prefix,
     });
     setByokDialogOpen(true);
   }
 
   function handleCloseByokDialog() {
-    setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "" });
+    setByokForm({ label: "", base_url: "", api_key: "", format: "auto", models: "", model_prefix: "" });
     setByokEditId(null);
     setByokDialogOpen(false);
+  }
+
+  function handleAddAnotherByokKey(existingProvider: ByokProvider) {
+    setByokEditId(null);
+    setByokForm({
+      label: "",
+      base_url: existingProvider.base_url,
+      api_key: "",
+      format: existingProvider.format,
+      models: existingProvider.models.join("\n"),
+      model_prefix: existingProvider.model_prefix,
+    });
+    setByokDialogOpen(true);
   }
 
   async function handleTestByok(id: number, label: string) {
@@ -962,8 +1032,36 @@ export default function Accounts() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {byokProviders.map((provider) => (
+          <div className="space-y-6">
+            {/* Group by model_prefix */}
+            {Array.from(
+              byokProviders.reduce((map, p) => {
+                const key = p.model_prefix || p.label;
+                if (!map.has(key)) map.set(key, []);
+                map.get(key)!.push(p);
+                return map;
+              }, new Map<string, ByokProvider[]>())
+            ).map(([prefix, providers]) => (
+              <div key={prefix} className="space-y-3">
+                {/* Prefix group header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Prefix:</span>
+                    <code className="text-xs font-mono bg-[var(--secondary)] text-[var(--foreground)] px-1.5 py-0.5 rounded">{prefix}</code>
+                    <Badge variant="outline" className="text-xs">{providers.length} {providers.length === 1 ? 'key' : 'keys'}</Badge>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2.5 text-xs gap-1"
+                    onClick={() => handleAddAnotherByokKey(providers[0])}
+                  >
+                    <Plus className="h-3 w-3" /> Add another key
+                  </Button>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {providers.map((provider) => (
               <Card key={provider.id} className="border-[var(--border)] overflow-hidden hover:border-[var(--primary)]/50 transition-all duration-200">
                 <CardHeader
                   className="pb-3 cursor-pointer hover:bg-[var(--secondary)]/30 transition-colors"
@@ -1125,16 +1223,19 @@ export default function Accounts() {
                 )}
               </Card>
             ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
 
       {/* BYOK Add/Edit Dialog */}
       <Dialog open={byokDialogOpen} onOpenChange={(open) => !open && handleCloseByokDialog()}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="w-full max-w-lg overflow-y-auto max-h-[90vh]">
           <DialogHeader>
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--primary)]/10 text-[var(--primary)]">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary)]/10 text-[var(--primary)]">
                 <Key className="h-4.5 w-4.5" />
               </div>
               <div>
@@ -1146,21 +1247,21 @@ export default function Accounts() {
             </div>
           </DialogHeader>
           <div className="space-y-4 pt-3">
-            {/* Connection Settings */}
+            {/* Provider Identity */}
             <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/[0.06] p-3.5">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Connection</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Provider Identity</p>
 
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-[var(--foreground)]">Provider Name</label>
+                <label className="text-sm font-medium text-[var(--foreground)]">Label</label>
                 <Input
                   value={byokForm.label}
                   onChange={(e) => setByokForm({ ...byokForm, label: e.target.value })}
                   placeholder="e.g., openrouter, myprovider"
                   readOnly={byokEditId !== null}
-                  className={`focus:ring-1 focus:ring-[var(--ring)] ${byokEditId ? 'bg-[var(--muted)] opacity-60' : ''}`}
+                  className={cn("focus:ring-1 focus:ring-[var(--ring)]", byokEditId ? 'bg-[var(--muted)] opacity-60' : '')}
                 />
                 <p className="text-xs text-[var(--muted-foreground)]">
-                  {byokEditId ? 'Prefix cannot be changed after creation' : 'Used as model prefix (e.g., "openrouter-gpt-4")'}
+                  {byokEditId ? 'Label cannot be changed after creation' : "Used as the model prefix (e.g. 'openrouter' → 'openrouter-gpt-4o')"}
                 </p>
               </div>
 
@@ -1207,15 +1308,15 @@ export default function Accounts() {
               </div>
             </div>
 
-            {/* Model Configuration */}
+            {/* Model Routing */}
             <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/[0.06] p-3.5">
-              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Configuration</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Model Routing</p>
 
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-[var(--foreground)]">API Format</label>
                 <select
                   value={byokForm.format}
-                  onChange={(e) => setByokForm({ ...byokForm, format: e.target.value as any })}
+                  onChange={(e) => setByokForm({ ...byokForm, format: e.target.value as "openai" | "anthropic" | "auto" })}
                   className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
                 >
                   <option value="auto">Auto-detect</option>
@@ -1229,18 +1330,18 @@ export default function Accounts() {
                 <textarea
                   value={byokForm.models}
                   onChange={(e) => setByokForm({ ...byokForm, models: e.target.value })}
-                  placeholder="gpt-4, claude-3-opus, llama-3"
-                  className="w-full h-20 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
+                  placeholder={"gpt-4o\nclaude-3-opus\nllama-3"}
+                  className="w-full min-h-[80px] resize-y rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)]"
                 />
-                <p className="text-xs text-[var(--muted-foreground)]">Comma-separated list of model IDs</p>
+                <p className="text-xs text-[var(--muted-foreground)]">One model ID per line</p>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-1">
-              <Button variant="outline" onClick={handleCloseByokDialog} className="text-[var(--muted-foreground)]">
+            <div className="flex flex-col sm:flex-row justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={handleCloseByokDialog} className="text-[var(--muted-foreground)] sm:w-auto w-full">
                 Cancel
               </Button>
-              <Button onClick={byokEditId ? handleUpdateByok : handleAddByok} className="gap-2 shadow-sm">
+              <Button onClick={byokEditId ? handleUpdateByok : handleAddByok} className="gap-2 shadow-sm sm:w-auto w-full">
                 {byokEditId ? (
                   <><Pencil className="h-4 w-4" /> Update Provider</>
                 ) : (
@@ -1323,7 +1424,7 @@ export default function Accounts() {
                 className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${addMode === "single" ? "bg-[var(--background)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
               >Single</button>
             </div>
-          ) : (
+          ) : addDialogProvider !== "mimo" ? (
             <div className="flex gap-1 rounded-md bg-[var(--secondary)] p-1">
               <button onClick={() => setAddMode("bulk")}
                 className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${addMode === "bulk" ? "bg-[var(--background)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
@@ -1332,7 +1433,7 @@ export default function Accounts() {
                 className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${addMode === "single" ? "bg-[var(--background)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
               >Single</button>
             </div>
-          )}
+          ) : null}
 
           {/* Token / OAuth mode */}
           {addMode === "pat" && addDialogProvider === "qoder" && (
@@ -1438,7 +1539,7 @@ export default function Accounts() {
           )}
 
           {/* Bulk mode (all providers) */}
-          {addMode === "bulk" && (
+          {addMode === "bulk" && addDialogProvider !== "mimo" && (
             <div className="space-y-4">
               {/* Results view — shown after import completes */}
               {importResults !== null ? (
@@ -1523,7 +1624,7 @@ export default function Accounts() {
           )}
 
           {/* Single mode (all providers) */}
-          {addMode === "single" && (
+          {addMode === "single" && addDialogProvider !== "mimo" && (
             <div className="space-y-4">
               <div>
                 <label className="text-sm text-[var(--foreground)]">Email</label>
@@ -1550,6 +1651,133 @@ export default function Accounts() {
               </div>
             </div>
           )}
+
+          {/* MiMo: Manual (API Key) vs Auto-Register (email:password) */}
+          {addDialogProvider === "mimo" && (
+            <div className="space-y-4">
+              {/* Mode toggle */}
+              <div className="flex rounded-md border border-[var(--border)] overflow-hidden text-sm">
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", mimoRegisterMode === "manual" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => { setMimoRegisterMode("manual"); setMimoBulkResults(null); }}
+                >
+                  Manual (API Key)
+                </button>
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", mimoRegisterMode === "auto" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => { setMimoRegisterMode("auto"); }}
+                >
+                  Auto-Register (email:password)
+                </button>
+              </div>
+
+              {/* Manual mode */}
+              {mimoRegisterMode === "manual" && (
+                <>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Email</label>
+                    <Input
+                      className="mt-1"
+                      placeholder="you@example.com"
+                      value={mimoForm.email}
+                      onChange={(e) => setMimoForm({ ...mimoForm, email: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">API Key</label>
+                    <Input
+                      className="mt-1"
+                      type="password"
+                      placeholder="Bearer token / API key"
+                      value={mimoForm.api_key}
+                      onChange={(e) => setMimoForm({ ...mimoForm, api_key: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">API key dari platform.xiaomimimo.com.</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Referral Code <span className="text-xs text-[var(--muted-foreground)]">(optional)</span></label>
+                    <Input
+                      className="mt-1"
+                      placeholder="M8C7QK"
+                      value={mimoForm.referralCode}
+                      onChange={(e) => setMimoForm({ ...mimoForm, referralCode: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setAddDialogProvider(null)}>Cancel</Button>
+                    <Button onClick={handleAddMimo}>Add Account</Button>
+                  </div>
+                </>
+              )}
+
+              {/* Auto-Register mode */}
+              {mimoRegisterMode === "auto" && (
+                <>
+                  {mimoBulkResults !== null ? (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-[var(--foreground)]">
+                          Results ({mimoBulkResults.filter((r) => r.success).length}/{mimoBulkResults.length} queued)
+                        </span>
+                      </div>
+                      <div className="max-h-48 overflow-y-auto space-y-1">
+                        {mimoBulkResults.map((r, i) => (
+                          <div
+                            key={i}
+                            className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${r.success ? "bg-[var(--success)]/10 text-[var(--success)]" : "bg-[var(--error)]/10 text-[var(--error)]"}`}
+                          >
+                            <span className="font-medium">{r.success ? "✓" : "✗"}</span>
+                            <span className="font-mono truncate">{r.email}</span>
+                            {!r.success && r.error && <span className="ml-auto shrink-0 opacity-80">— {r.error}</span>}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-end gap-2 mt-3">
+                        <Button variant="outline" onClick={() => { setMimoBulkResults(null); setAddDialogProvider(null); }}>Close</Button>
+                        <Button onClick={() => navigate("/bot-logs")}>View Logs</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="text-sm text-[var(--foreground)]">Accounts (email:password, satu per baris)</label>
+                        <textarea
+                          value={mimoBulkText}
+                          onChange={(e) => setMimoBulkText(e.target.value)}
+                          className="mt-1 w-full h-40 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
+                          placeholder={"user1@gmail.com:password1\nuser2@gmail.com:password2\nuser3@gmail.com:password3"}
+                        />
+                        <p className="mt-1 text-xs text-[var(--muted-foreground)]">Bot akan auto-login ke platform.xiaomimimo.com via Google OAuth dan generate API key.</p>
+                      </div>
+                      <div>
+                        <label className="text-sm text-[var(--foreground)]">Referral Code <span className="text-xs text-[var(--muted-foreground)]">(optional)</span></label>
+                        <Input
+                          className="mt-1"
+                          placeholder="M8C7QK"
+                          value={mimoBulkReferralCode}
+                          onChange={(e) => setMimoBulkReferralCode(e.target.value)}
+                        />
+                      </div>
+                       <div className="flex items-center gap-2">
+                          <label className="text-sm text-[var(--foreground)]">Concurrent:</label>
+                          <select value={mimoConcurrency} onChange={(e) => setMimoConcurrency(Number(e.target.value))} className="h-8 w-16 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 text-sm text-[var(--foreground)]">
+                            <option value={1}>1</option>
+                            <option value={2}>2</option>
+                            <option value={3}>3</option>
+                            <option value={5}>5</option>
+                            <option value={10}>10</option>
+                          </select>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                        <Button variant="outline" onClick={() => setAddDialogProvider(null)}>Cancel</Button>
+                        <Button onClick={handleMimoBulkLogin}>Auto-Register</Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -1566,3 +1794,4 @@ export default function Accounts() {
     </div>
   );
 }
+

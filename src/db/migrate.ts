@@ -213,6 +213,10 @@ function ensureTablesExist() {
 const IDEMPOTENT_COLUMNS: Array<{ table: string; column: string; ddl: string }> = [
   // 2026-06-13 — compression_stats (token-saver telemetry, see src/proxy/compression/)
   { table: "request_logs", column: "compression_stats", ddl: "ALTER TABLE request_logs ADD COLUMN compression_stats TEXT" },
+  // 2026-06-21 — bin (stored BIN prefix, supports up to 8 digits, see src/api/vcc.ts)
+  { table: "vcc_cards", column: "bin", ddl: "ALTER TABLE vcc_cards ADD COLUMN bin TEXT" },
+  // 2026-06-21 — card_bin (BIN recorded on transaction for history tracking)
+  { table: "vcc_transactions", column: "card_bin", ddl: "ALTER TABLE vcc_transactions ADD COLUMN card_bin TEXT" },
 ];
 
 function tableHasColumn(table: string, column: string): boolean {

@@ -1,4 +1,4 @@
-import { db } from "../db/index";
+﻿import { db } from "../db/index";
 import { accounts } from "../db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { loginAccount, loginAllProviders } from "./runner";
@@ -222,6 +222,36 @@ class LoginQueue {
 
     if (!account) return;
     if (item.generation !== this.clearGeneration) return;
+
+    // Skip login if account already has valid tokens (e.g., manually imported or already authenticated)
+    const tokens = account.tokens;
+    const hasApiKey = tokens && typeof tokens === "object" && !Array.isArray(tokens) && (tokens as any).api_key;
+    const hasValidTokens = hasApiKey || (typeof tokens === "string" && tokens.includes("api_key"));
+    
+    if (hasValidTokens && account.provider === "mimo") {
+      // Mark as active directly
+      await db.update(accounts)
+        .set({ 
+          status: "active", 
+          enabled: true,
+          errorMessage: null,
+          updatedAt: new Date() 
+        })
+        .where(eq(accounts.id, item.accountId));
+      
+      const log = addAuthLog({
+        type: "login_success",
+        accountId: item.accountId,
+        email: account.email,
+        provider: account.provider,
+        step: "skipped_already_authenticated",
+        message: `Account already has API key, marked as active`,
+      });
+      
+      broadcast({ type: "login_success", data: log });
+      this.totalSuccess++;
+      return;
+    }
 
     const processingLog = addAuthLog({
       type: "queue_processing",

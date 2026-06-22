@@ -236,7 +236,7 @@ export async function routeRequest(
       if (isTransientError(result.error || "")) {
         await pool.markTransientFailure(account.id, result.error || "Transient error");
       } else {
-        await pool.markError(account.id, result.error || "Unknown error");
+        await pool.markTransientFailure(account.id, result.error || "Unknown error");
       }
       lastError = result.error || "Unknown error";
     } catch (error) {
@@ -254,7 +254,7 @@ export async function routeRequest(
       } else if (isTransientError(errMsg)) {
         await pool.markTransientFailure(account.id, errMsg);
       } else {
-        await pool.markError(account.id, errMsg);
+        await pool.markTransientFailure(account.id, errMsg);
       }
       lastError = errMsg;
     }

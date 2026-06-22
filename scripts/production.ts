@@ -55,6 +55,46 @@ if (watchMode) {
 const port = process.env.PORT || "1930";
 const dashboardPort = process.env.DASHBOARD_PORT || "1931";
 
+function killPortOccupants(port: string, label: string): void {
+  try {
+    let pids: string[] = [];
+    if (process.platform === "win32") {
+      const result = Bun.spawnSync(["netstat", "-ano"], { stdout: "pipe", stderr: "pipe" });
+      const output = result.stdout.toString();
+      for (const line of output.split("\n")) {
+        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && /^\d+$/.test(pid)) pids.push(pid);
+        }
+      }
+    } else {
+      const result = Bun.spawnSync(["lsof", "-ti", `:${port}`], { stdout: "pipe", stderr: "pipe" });
+      const output = result.stdout.toString().trim();
+      if (output) pids = output.split("\n").filter(p => p.trim());
+    }
+
+    if (pids.length === 0) return;
+
+    console.log(`[${label}] Port ${port} is in use, killing PID(s): ${pids.join(", ")}...`);
+    for (const pid of pids) {
+      try {
+        if (process.platform === "win32") {
+          Bun.spawnSync(["taskkill", "/PID", pid, "/F"], { stdout: "pipe", stderr: "pipe" });
+        } else {
+          Bun.spawnSync(["kill", "-9", pid], { stdout: "pipe", stderr: "pipe" });
+        }
+      } catch {}
+    }
+    console.log(`[${label}] Port ${port} freed.`);
+  } catch {
+    // Silently ignore — don't block startup on port-check failures
+  }
+}
+
+killPortOccupants(port, "production");
+killPortOccupants(dashboardPort, "production");
+
 // Resolve bun executable — process.execPath may fail to spawn on Windows
 // when launched via Start-Process with redirected IO (PATH not inherited).
 const bunExe = (() => {
@@ -112,12 +152,12 @@ ${"\x1b[36m"} |  _| | __| __/ _ \\ | | | '_ \` _ \\  ${"\x1b[0m"}
 ${"\x1b[36m"} | |___| |_| ||  __/ |_| | | | | | | ${"\x1b[0m"}
 ${"\x1b[36m"} |_____|\\__|\\__\\___|\\__,_|_| |_| |_| ${"\x1b[0m"}
 
-  ${"\x1b[33m"}⚡ PRODUCTION MODE${"\x1b[0m"}
-  ${"\x1b[2m"}─────────────────────────────────────${"\x1b[0m"}
-  ${"\x1b[32m"}▸${"\x1b[0m"} Backend    ${"\x1b[36m"}http://localhost:${port}${"\x1b[0m"}
-  ${"\x1b[32m"}▸${"\x1b[0m"} Dashboard  ${"\x1b[36m"}http://localhost:${dashboardPort}${"\x1b[0m"}
-  ${"\x1b[32m"}▸${"\x1b[0m"} API Key    ${"\x1b[33m"}${process.env.API_KEY || "pool-proxy-secret-key"}${"\x1b[0m"}
-  ${"\x1b[2m"}─────────────────────────────────────${"\x1b[0m"}
+  ${"\x1b[33m"}* PRODUCTION MODE${"\x1b[0m"}
+  ${"\x1b[2m"}=====================================${"\x1b[0m"}
+  ${"\x1b[32m"}>${"\x1b[0m"} Backend    ${"\x1b[36m"}http://localhost:${port}${"\x1b[0m"}
+  ${"\x1b[32m"}>${"\x1b[0m"} Dashboard  ${"\x1b[36m"}http://localhost:${dashboardPort}${"\x1b[0m"}
+  ${"\x1b[32m"}>${"\x1b[0m"} API Key    ${"\x1b[33m"}${process.env.API_KEY || "pool-proxy-secret-key"}${"\x1b[0m"}
+  ${"\x1b[2m"}=====================================${"\x1b[0m"}
 `);
 
 // Start backend

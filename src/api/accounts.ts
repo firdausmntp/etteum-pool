@@ -438,6 +438,444 @@ accountsRouter.post("/byok/:id/test", async (c) => {
   }
 });
 
+
+
+
+/**
+ * POST /api/accounts/mimo - Add a new MiMo account
+ * Body: { email: string, api_key: string }
+ */
+accountsRouter.post("/mimo", async (c) => {
+  const body = await c.req.json() as { email?: string; api_key?: string };
+  const { email, api_key } = body;
+
+  if (!email || !api_key) {
+    return c.json({ error: "email and api_key are required" }, 400);
+  }
+
+  const encryptedKey = encrypt(api_key);
+
+  try {
+    const result = await db.insert(accounts).values({
+      provider: "mimo",
+      email,
+      password: encryptedKey,
+      tokens: JSON.stringify({ api_key, email, created_at: new Date().toISOString() }),
+      status: "active",
+      enabled: true,
+      quotaLimit: 0,
+      quotaRemaining: 0,
+    });
+
+    const created = await db.select().from(accounts)
+      .where(eq(accounts.id, Number(result.lastInsertRowid)))
+      .get();
+
+    broadcast({ type: "account_created", data: { provider: "mimo", email } });
+
+    return c.json({ success: true, id: created?.id, email, provider: "mimo" }, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  }
+});
+
+/**
+ * POST /api/accounts/mimo/refresh-referrals - Fetch and update each account's own referral code
+ */
+accountsRouter.post("/mimo/refresh-referrals", async (c) => {
+  const rows = await db.select().from(accounts).where(eq(accounts.provider, "mimo"));
+
+  let updated = 0;
+  let failed = 0;
+  const results: Array<{ email: string; referral_code?: string; error?: string }> = [];
+
+  for (const a of rows) {
+    const tokens = (typeof a.tokens === "string"
+      ? (() => { try { return JSON.parse(a.tokens); } catch { return {}; } })()
+      : a.tokens || {}) as Record<string, unknown>;
+
+    const ph = tokens.ph as string | undefined;
+    if (!ph) {
+      results.push({ email: a.email, error: "no ph token" });
+      failed++;
+      continue;
+    }
+
+    try {
+      const phEncoded = encodeURIComponent(ph);
+      const serviceToken = tokens.service_token as string | undefined;
+      const userId = tokens.user_id as string | undefined;
+      const slh = tokens.slh as string | undefined;
+      const cookieHeader = serviceToken
+        ? `api-platform_serviceToken="${serviceToken}"; userId=${userId ?? ""}; api-platform_slh="${slh ?? ""}"; api-platform_ph="${ph}"`
+        : undefined;
+      const resp = await fetch(
+        `https://platform.xiaomimimo.com/api/v1/invitation/code?api-platform_ph=${phEncoded}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            ...(cookieHeader ? { "Cookie": cookieHeader } : {}),
+          },
+        }
+      );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const body = await resp.json() as { code?: number; data?: { invitationCode?: string } };
+      if (body.code !== 0 || !body.data?.invitationCode) throw new Error("unexpected response");
+
+      const referralCode = body.data.invitationCode;
+      const newTokens = { ...tokens, referral_code: referralCode };
+      await db.update(accounts).set({ tokens: newTokens as unknown, updatedAt: new Date() }).where(eq(accounts.id, a.id));
+      results.push({ email: a.email, referral_code: referralCode });
+      updated++;
+    } catch (err) {
+      results.push({ email: a.email, error: err instanceof Error ? err.message : String(err) });
+      failed++;
+    }
+  }
+
+  return c.json({ total: rows.length, updated, failed, results });
+});
+
+/**
+ * GET /api/accounts/mimo - List all MiMo accounts
+ */
+accountsRouter.get("/mimo", async (c) => {
+  const rows = await db.select().from(accounts)
+    .where(eq(accounts.provider, "mimo"));
+
+  const result = rows.map((a) => {
+    const mimoTokens = typeof a.tokens === "string"
+      ? JSON.parse(a.tokens) as Record<string, unknown>
+      : a.tokens as Record<string, unknown> | null;
+    const balance = parseFloat((mimoTokens?.balance ?? mimoTokens?.total ?? "0") as string) || 0;
+    return {
+      id: a.id,
+      email: a.email,
+      status: a.status,
+      enabled: a.enabled,
+      created_at: mimoTokens?.created_at ?? null,
+      createdAt: a.createdAt,
+      api_key: mimoTokens?.api_key as string ?? "",
+      referral_code: mimoTokens?.referral_code as string ?? null,
+      balance,
+    };
+  });
+
+  return c.json({ accounts: result });
+});
+
+/**
+ * PATCH /api/accounts/mimo/:id - Update email or api_key
+ * Body: { email?: string, api_key?: string }
+ */
+accountsRouter.patch("/mimo/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json() as { email?: string; api_key?: string };
+
+  const account = await db.select().from(accounts)
+    .where(eq(accounts.id, id))
+    .get();
+
+  if (!account || account.provider !== "mimo") {
+    return c.json({ error: "MiMo account not found" }, 404);
+  }
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+  if (body.api_key) {
+    updates.password = encrypt(body.api_key);
+  }
+
+  if (body.email) {
+    updates.email = body.email;
+    const existingTokens = typeof account.tokens === "string"
+      ? JSON.parse(account.tokens) as Record<string, unknown>
+      : account.tokens as Record<string, unknown> | null ?? {};
+    updates.tokens = JSON.stringify({ ...existingTokens, email: body.email });
+  }
+
+  await db.update(accounts).set(updates).where(eq(accounts.id, id));
+
+  broadcast({ type: "mimo_updated", data: { id } });
+
+  return c.json({ success: true, id });
+});
+
+/**
+ * POST /api/accounts/mimo/login - Auto-register a MiMo account via Google OAuth
+ * Body: { email: string, password: string }
+ * Creates a pending account and enqueues it for bot login
+ */
+accountsRouter.post("/mimo/login", async (c) => {
+  const body = await c.req.json() as { email?: string; password?: string };
+  const { email, password } = body;
+
+  if (!email || !password) {
+    return c.json({ error: "email and password are required" }, 400);
+  }
+
+  try {
+    const result = await db.insert(accounts).values({
+      provider: "mimo",
+      email,
+      password: encrypt(password),
+      tokens: JSON.stringify({ email, created_at: new Date().toISOString() }),
+      status: "pending",
+      enabled: true,
+      quotaLimit: 0,
+      quotaRemaining: 0,
+    });
+
+    const created = await db.select().from(accounts)
+      .where(eq(accounts.id, Number(result.lastInsertRowid)))
+      .get();
+
+    if (!created) {
+      return c.json({ error: "Failed to create account" }, 500);
+    }
+
+    loginQueue.enqueue(created.id);
+    broadcast({ type: "account_created", data: { provider: "mimo", email, id: created.id } });
+
+    return c.json({ success: true, id: created.id, email, provider: "mimo", queued: true }, 201);
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
+  }
+});
+
+/**
+ * POST /api/accounts/mimo/bulk-login - Bulk auto-register MiMo accounts via Google OAuth
+ * Body: { accounts: [{email, password}] } or plain text "email:password\n" per line
+ */
+accountsRouter.post("/mimo/bulk-login", async (c) => {
+  let entries: Array<{ email: string; password: string }> = [];
+  let referralCode: string | undefined;
+
+  const contentType = c.req.header("content-type") || "";
+  if (contentType.includes("text/plain")) {
+    const text = await c.req.text();
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const sep = trimmed.includes(":") ? ":" : "|";
+      const [em, ...rest] = trimmed.split(sep);
+      const pw = rest.join(sep);
+      if (em && pw) entries.push({ email: em.trim(), password: pw.trim() });
+    }
+  } else {
+    const body = await c.req.json() as { accounts?: Array<{ email?: string; password?: string }> | string; referral_code?: string };
+    referralCode = body.referral_code?.trim() || undefined;
+    if (typeof body.accounts === "string") {
+      // plain text in JSON field
+      for (const line of body.accounts.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const sep = trimmed.includes(":") ? ":" : "|";
+        const [em, ...rest] = trimmed.split(sep);
+        const pw = rest.join(sep);
+        if (em && pw) entries.push({ email: em.trim(), password: pw.trim() });
+      }
+    } else if (Array.isArray(body.accounts)) {
+      for (const a of body.accounts) {
+        if (a.email && a.password) entries.push({ email: a.email, password: a.password });
+      }
+    }
+  }
+
+  if (entries.length === 0) {
+    return c.json({ error: "No valid email:password entries found" }, 400);
+  }
+
+  let queued = 0;
+  const results: Array<{ email: string; success: boolean; id?: number; error?: string }> = [];
+
+  for (const { email, password } of entries) {
+    try {
+      const result = await db.insert(accounts).values({
+        provider: "mimo",
+        email,
+        password: encrypt(password),
+        tokens: JSON.stringify({ email, created_at: new Date().toISOString(), ...(referralCode ? { referral_code: referralCode } : {}) }),
+        status: "pending",
+        enabled: true,
+        quotaLimit: 0,
+        quotaRemaining: 0,
+      });
+
+      const created = await db.select().from(accounts)
+        .where(eq(accounts.id, Number(result.lastInsertRowid)))
+        .get();
+
+      if (created) {
+        loginQueue.enqueue(created.id);
+        results.push({ email, success: true, id: created.id });
+        queued++;
+      } else {
+        results.push({ email, success: false, error: "Insert succeeded but row not found" });
+      }
+    } catch (err) {
+      results.push({ email, success: false, error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  }
+
+  broadcast({ type: "mimo_bulk_login_queued", data: { total: entries.length, queued } });
+
+  return c.json({ total: entries.length, queued, results });
+});
+
+/**
+ * DELETE /api/accounts/mimo/:id - Delete a MiMo account
+ */
+accountsRouter.delete("/mimo/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+
+  await db.update(requestLogs).set({ accountId: null }).where(eq(requestLogs.accountId, id));
+
+  const result = await db.delete(accounts)
+    .where(eq(accounts.id, id))
+    .returning();
+
+  if (result.length === 0) {
+    return c.json({ error: "MiMo account not found" }, 404);
+  }
+
+  broadcast({ type: "mimo_deleted", data: { id } });
+
+  return c.json({ success: true, deleted: id });
+});
+
+/**
+ * POST /api/accounts/mimo/bulk - Bulk import MiMo accounts
+ * Body: { accounts: [{ email: string, api_key: string }] }
+ */
+accountsRouter.post("/mimo/bulk", async (c) => {
+  const body = await c.req.json() as { accounts?: Array<{ email?: string; api_key?: string }> };
+
+  if (!Array.isArray(body.accounts) || body.accounts.length === 0) {
+    return c.json({ error: "accounts array is required" }, 400);
+  }
+
+  const results: Array<{ email: string; success: boolean; id?: number; error?: string }> = [];
+  let inserted = 0;
+
+  for (const item of body.accounts) {
+    const { email, api_key } = item;
+    if (!email || !api_key) {
+      results.push({ email: email ?? "", success: false, error: "email and api_key are required" });
+      continue;
+    }
+
+    try {
+      const newAccount = {
+        provider: "mimo" as const,
+        email,
+        password: encrypt(api_key),
+        tokens: JSON.stringify({ api_key, email, created_at: new Date().toISOString() }),
+        status: "active" as const,
+        enabled: true,
+        quotaLimit: 0,
+        quotaRemaining: 0,
+      };
+
+      const result = await db.insert(accounts).values(newAccount).returning();
+      const account = result[0];
+      if (!account) throw new Error("Insert returned no row");
+
+      results.push({ email, success: true, id: account.id });
+      inserted++;
+    } catch (err) {
+      results.push({ email, success: false, error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  }
+
+  return c.json({ total: body.accounts.length, inserted, results });
+});
+
+/**
+ * POST /api/accounts/mimo/:id/test - Test a MiMo account
+ * Hits https://api.xiaomimimo.com/v1/models with Bearer API key
+ */
+accountsRouter.post("/mimo/:id/test", async (c) => {
+  const id = Number(c.req.param("id"));
+
+  const account = await db.select().from(accounts)
+    .where(eq(accounts.id, id))
+    .get();
+
+  if (!account || account.provider !== "mimo") {
+    return c.json({ error: "MiMo account not found" }, 404);
+  }
+
+  const apiKey = decrypt(account.password);
+
+  try {
+    const startTime = Date.now();
+    const response = await fetch("https://api.xiaomimimo.com/v1/models", {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const latencyMs = Date.now() - startTime;
+
+    if (response.status === 401 || response.status === 403) {
+      return c.json({ success: false, error: "Authentication failed", latency_ms: latencyMs });
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      return c.json({ success: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}`, latency_ms: latencyMs });
+    }
+
+    const data = await response.json() as Record<string, unknown>;
+    const modelsArr = Array.isArray(data.data) ? data.data as unknown[] : [];
+    return c.json({ success: true, latency_ms: latencyMs, models_count: modelsArr.length });
+  } catch (error) {
+    return c.json({
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    });
+  }
+});
+
+/**
+ * POST /api/accounts/mimo/validate-all - Test all MiMo accounts in parallel
+ */
+accountsRouter.post("/mimo/validate-all", async (c) => {
+  const rows = await db.select().from(accounts)
+    .where(eq(accounts.provider, "mimo"));
+
+  const testOne = async (account: typeof rows[0]) => {
+    const apiKey = decrypt(account.password);
+    try {
+      const startTime = Date.now();
+      const response = await fetch("https://api.xiaomimimo.com/v1/models", {
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const latencyMs = Date.now() - startTime;
+
+      if (!response.ok) {
+        return { id: account.id, email: account.email ?? "", success: false, latency_ms: latencyMs, error: `HTTP ${response.status}` };
+      }
+
+      const data = await response.json() as Record<string, unknown>;
+      const modelsArr = Array.isArray(data.data) ? data.data as unknown[] : [];
+      return { id: account.id, email: account.email ?? "", success: true, latency_ms: latencyMs, models_count: modelsArr.length };
+    } catch (err) {
+      return { id: account.id, email: account.email ?? "", success: false, error: err instanceof Error ? err.message : "Network error" };
+    }
+  };
+
+  const results = await Promise.all(rows.map(testOne));
+  const passed = results.filter((r) => r.success).length;
+  const failed = results.length - passed;
+
+  return c.json({ total: results.length, passed, failed, results });
+});
+
 /**
  * POST /api/accounts/:id/test - Test any non-BYOK account
  * Returns { success, latency_ms, diagnosis, model?, error? }
@@ -557,13 +995,38 @@ accountsRouter.post("/:id/test", async (c) => {
         break;
       }
       case "qoder": {
-        const cookiesRaw = String(tokens?.cookies || tokens?.web_cookie || "");
-        if (!cookiesRaw) {
-          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "No cookies in account", latency_ms: 0 });
+        const t = typeof tokens === "string" ? JSON.parse(tokens) : tokens;
+        const securityOauthToken = String((t as Record<string, unknown>)?.securityOauthToken || "");
+        if (!securityOauthToken) {
+          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "No securityOauthToken in account (needs warmup)", latency_ms: 0 });
         }
-        testModel = "qoder-claude-haiku";
-        url = "https://api.qoder.com/v1/chat/completions";
-        headers["Cookie"] = cookiesRaw;
+        testModel = "qd-claude-haiku";
+        url = "https://openapi.qoder.sh/v1/chat/completions";
+        headers["Authorization"] = `Bearer ${securityOauthToken}`;
+        headers["Cosy-ClientType"] = "5";
+        headers["Cosy-Version"] = "1.0.6";
+        headers["User-Agent"] = "qoder/1.0.6";
+        bodyPayload = { model: testModel, messages: [{ role: "user", content: "Hi" }], max_tokens: 1 };
+        break;
+      }
+      case "mimo": {
+        const mimoTokens = typeof account.tokens === "string"
+          ? JSON.parse(account.tokens) as Record<string, unknown>
+          : account.tokens as Record<string, unknown> | null;
+        let mimoApiKey = String(mimoTokens?.api_key || "");
+        if (!mimoApiKey && account.password) {
+          try {
+            mimoApiKey = decrypt(account.password);
+          } catch {
+            // ignore decrypt errors
+          }
+        }
+        if (!mimoApiKey) {
+          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "No API key in account", latency_ms: 0 });
+        }
+        testModel = "mimo-v2-flash";
+        url = "https://api.xiaomimimo.com/v1/chat/completions";
+        headers["Authorization"] = `Bearer ${mimoApiKey}`;
         bodyPayload = { model: testModel, messages: [{ role: "user", content: "Hi" }], max_tokens: 1 };
         break;
       }
@@ -1686,210 +2149,6 @@ async function handleCodexInstantLogin(c: any, tokens: string[]) {
   const result = await exchangeCodexRefreshTokens(tokens);
   return c.json(result);
 }
-
-/**
- * BYOK (Bring Your Own Key) Management Endpoints
- */
-
-/**
- * POST /api/accounts/byok - Create BYOK provider
- */
-accountsRouter.post("/byok", async (c) => {
-  const body = await c.req.json<{
-    label: string;
-    base_url: string;
-    api_key: string;
-    format?: "openai" | "anthropic" | "auto";
-    models: string[];
-    headers?: Record<string, string>;
-  }>();
-
-  if (!body.label || !body.base_url || !body.api_key || !body.models || body.models.length === 0) {
-    return c.json({ error: "label, base_url, api_key, and models[] are required" }, 400);
-  }
-
-  // Validate label format (lowercase alphanumeric + hyphens)
-  if (!/^[a-z0-9-]+$/.test(body.label)) {
-    return c.json({ error: "label must be lowercase alphanumeric with hyphens only" }, 400);
-  }
-
-  // Check uniqueness
-  const existing = await db.select().from(accounts)
-    .where(eq(accounts.email, body.label))
-    .then((rows) => rows.find((r) => r.provider === "byok"));
-
-  if (existing) {
-    return c.json({ error: "BYOK provider with this label already exists" }, 409);
-  }
-
-  // Encrypt API key
-  const encryptedKey = encrypt(body.api_key);
-
-  // Build tokens JSON
-  const tokens = {
-    base_url: body.base_url,
-    format: body.format || "auto",
-    models: body.models,
-    model_prefix: body.label,
-    headers: body.headers || {},
-  };
-
-  try {
-    const result = await db.insert(accounts).values({
-      provider: "byok",
-      email: body.label,
-      password: encryptedKey,
-      status: "active",
-      enabled: true,
-      tokens: tokens,
-      quotaLimit: -1,
-      quotaRemaining: -1,
-    }).returning();
-
-    const created = result[0]!;
-    pool.invalidate("byok" as ProviderName);
-
-    broadcast({
-      type: "byok_created",
-      data: { id: created.id, label: body.label },
-    });
-
-    // Refresh BYOK model cache
-    const { refreshByokModels } = await import("../proxy/providers/registry");
-    await refreshByokModels();
-
-    return c.json({
-      success: true,
-      id: created.id,
-      label: body.label,
-      models: body.models.map((m) => `${body.label}-${m}`),
-    }, 201);
-  } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : "Unknown error" }, 500);
-  }
-});
-
-/**
- * GET /api/accounts/byok - List all BYOK providers
- */
-accountsRouter.get("/byok", async (c) => {
-  const byokAccounts = await db.select().from(accounts)
-    .where(eq(accounts.provider, "byok"));
-
-  const providers = byokAccounts.map((acc) => {
-    const tokens = typeof acc.tokens === "string"
-      ? JSON.parse(acc.tokens)
-      : acc.tokens;
-
-    return {
-      id: acc.id,
-      label: acc.email,
-      base_url: tokens?.base_url || "",
-      format: tokens?.format || "auto",
-      models: tokens?.models || [],
-      model_prefix: tokens?.model_prefix || acc.email,
-      status: acc.status,
-      enabled: acc.enabled,
-      available_models: (tokens?.models || []).map((m: string) => `${tokens?.model_prefix || acc.email}-${m}`),
-    };
-  });
-
-  return c.json({ providers, total: providers.length });
-});
-
-/**
- * PATCH /api/accounts/byok/:id - Update BYOK provider
- */
-accountsRouter.patch("/byok/:id", async (c) => {
-  const id = Number(c.req.param("id"));
-  const body = await c.req.json<{
-    base_url?: string;
-    api_key?: string;
-    format?: "openai" | "anthropic" | "auto";
-    models?: string[];
-    headers?: Record<string, string>;
-  }>();
-
-  const account = await db.select().from(accounts)
-    .where(eq(accounts.id, id))
-    .get();
-
-  if (!account || account.provider !== "byok") {
-    return c.json({ error: "BYOK provider not found" }, 404);
-  }
-
-  const tokens = typeof account.tokens === "string"
-    ? JSON.parse(account.tokens)
-    : account.tokens || {};
-
-  // Update fields
-  if (body.base_url) tokens.base_url = body.base_url;
-  if (body.format) tokens.format = body.format;
-  if (body.models) tokens.models = body.models;
-  if (body.headers) tokens.headers = body.headers;
-
-  const updateData: Record<string, unknown> = {
-    tokens: tokens,
-    updatedAt: new Date(),
-  };
-
-  if (body.api_key) {
-    updateData.password = encrypt(body.api_key);
-  }
-
-  await db.update(accounts)
-    .set(updateData)
-    .where(eq(accounts.id, id));
-
-  pool.invalidate("byok" as ProviderName);
-
-  broadcast({
-    type: "byok_updated",
-    data: { id },
-  });
-
-  // Refresh BYOK model cache
-  const { refreshByokModels } = await import("../proxy/providers/registry");
-  await refreshByokModels();
-
-  return c.json({
-    success: true,
-    id,
-    label: account.email,
-    models: (tokens.models || []).map((m: string) => `${tokens.model_prefix || account.email}-${m}`),
-  });
-});
-
-/**
- * DELETE /api/accounts/byok/:id - Delete BYOK provider
- */
-accountsRouter.delete("/byok/:id", async (c) => {
-  const id = Number(c.req.param("id"));
-
-  // Nullify foreign key references
-  await db.update(requestLogs).set({ accountId: null }).where(eq(requestLogs.accountId, id));
-
-  const result = await db.delete(accounts)
-    .where(eq(accounts.id, id))
-    .returning();
-
-  if (result.length === 0) {
-    return c.json({ error: "BYOK provider not found" }, 404);
-  }
-
-  pool.invalidate("byok" as ProviderName);
-
-  broadcast({
-    type: "byok_deleted",
-    data: { id },
-  });
-
-  // Refresh BYOK model cache
-  const { refreshByokModels } = await import("../proxy/providers/registry");
-  await refreshByokModels();
-
-  return c.json({ success: true, deleted: id });
-});
 
 /**
  * POST /api/accounts/:id/open-panel - Open web panel in browser with auto-login

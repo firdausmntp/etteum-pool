@@ -200,13 +200,13 @@ export function BinSelector({ value, onChange, onBinInfo }: BinSelectorProps) {
       {/* Custom BIN Input */}
       <div className="space-y-2">
         <label htmlFor="custom-bin" className="text-sm font-medium">
-          Or enter custom BIN (6 digits)
+          Or enter custom BIN (6-12 digits)
         </label>
         <Input
           id="custom-bin"
           type="text"
-          placeholder="Enter 6-digit BIN"
-          maxLength={6}
+          placeholder="Enter BIN (6-12 digits)"
+          maxLength={12}
           value={selectedBin}
           onChange={(e) => {
             const bin = e.target.value.replace(/\D/g, '');

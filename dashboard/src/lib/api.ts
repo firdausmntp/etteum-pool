@@ -898,6 +898,61 @@ export async function deleteByokProvider(id: number): Promise<{ success: boolean
   return fetchApi(`/api/accounts/byok/${id}`, { method: "DELETE" });
 }
 
+// === MiMo Account API ====================================================
+
+export interface MimoAccount {
+  id: number;
+  email: string;
+  status: string;
+  enabled: number;
+  created_at: string | null;
+  createdAt: string | null;
+  api_key?: string;
+  referral_code?: string | null;
+  balance?: number;
+}
+
+export async function getMimoAccounts(): Promise<{ accounts: MimoAccount[] }> {
+  return fetchApi("/api/accounts/mimo");
+}
+
+export async function addMimoAccount(data: {
+  email: string;
+  api_key: string;
+  referral_code?: string;
+}): Promise<{ success: boolean; id: number; email: string }> {
+  return fetchApi("/api/accounts/mimo", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateMimoAccount(
+  id: number,
+  data: { email?: string; api_key?: string }
+): Promise<{ success: boolean; id: number }> {
+  return fetchApi(`/api/accounts/mimo/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteMimoAccount(id: number): Promise<{ success: boolean; deleted: number }> {
+  return fetchApi(`/api/accounts/mimo/${id}`, { method: "DELETE" });
+}
+
+export async function testMimoAccount(id: number): Promise<{
+  success: boolean;
+  latency_ms?: number;
+  balance?: unknown;
+  error?: string;
+}> {
+  return fetchApi(`/api/accounts/mimo/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 // ─── Relay / Tunnel API ──────────────────────────────────────────────────────
 
 export async function fetchTunnelStatus(): Promise<any> {
@@ -986,4 +1041,26 @@ export interface ModelsHealthResponse {
 
 export async function fetchModelsHealth(): Promise<ModelsHealthResponse> {
   return fetchApi('/api/accounts/models/health');
+}
+
+export async function bulkLoginMimo(accounts: string[], referralCode?: string, concurrency?: number): Promise<{
+  total: number;
+  queued: number;
+  results: Array<{ email: string; success: boolean; id?: number; error?: string }>;
+}> {
+  const entries = accounts
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      const sep = trimmed.includes(":") ? ":" : "|";
+      const idx = trimmed.indexOf(sep);
+      if (idx === -1) return null;
+      return { email: trimmed.slice(0, idx).trim(), password: trimmed.slice(idx + 1).trim() };
+    })
+    .filter((e): e is { email: string; password: string } => e !== null && !!e.email && !!e.password);
+
+  return fetchApi('/api/accounts/mimo/bulk-login', {
+    method: 'POST',
+    body: JSON.stringify({ accounts: entries, ...(referralCode ? { referral_code: referralCode } : {}), ...(concurrency !== undefined ? { concurrency } : {}) }),
+  });
 }

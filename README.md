@@ -10,7 +10,7 @@
 
 ## Features
 
-- **Multi-Provider Support** — Kiro, Kiro Pro, CodeBuddy, Codex, Canva, Qoder
+- **Multi-Provider Support** — Kiro, Kiro Pro, CodeBuddy, Codex, Canva, Qoder, Zenmux, MiMo, Merlin
 - **BYOK (Bring Your Own Key)** — Use your own API keys (OpenRouter, Together, Groq, etc.) alongside pool accounts
 - **Automatic Load Balancing** — Round-robin and least-connections strategies across healthy accounts
 - **Credit Tracking** — Real-time quota monitoring and exhaustion detection
@@ -357,6 +357,8 @@ RELAY_AUTO_START=false       # Auto-start on boot
 | `RELAY_PUBLIC_BASE_URL` | empty | Public URL for relay server mode |
 | `RELAY_MAX_TUNNELS` | `50` | Max connected relay clients |
 | `RELAY_AUTO_START` | `false` | Auto-start relay on server boot |
+| `CAPTCHA_SERVICE` | `none` | Captcha solving service (no longer used, kept for backward compat) |
+| `CAPTCHA_API_KEY` | empty | API key for 2captcha.com (no longer used) |
 
 ---
 
@@ -372,7 +374,11 @@ RELAY_AUTO_START=false       # Auto-start on boot
 | **Codex** | OAuth/Token | OpenAI models, GPT-4o |
 | **Canva** | Email/Password | Image generation (Flux Pro) |
 | **Qoder** | PAT Token | Claude models, job-based auth |
+| **MiMo** | API Key | Xiaomi MiMo models (mimo-v2.5-pro, mimo-v2-flash) |
 | **BYOK** | API Key | OpenRouter, Together, Groq, any OpenAI-compatible |
+
+> ~~**Zenmux**~~ — **DEPRECATED** per 2026-06-22 (keygen API auth tidak bisa diotomasi reliably)
+> ~~**Merlin**~~ — **DEPRECATED** per 2026-06-22 (cookie-based auth tidak stabil)
 
 ### Request Flow
 

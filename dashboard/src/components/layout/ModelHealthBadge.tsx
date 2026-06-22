@@ -4,16 +4,19 @@ import { cn } from "@/lib/utils";
 import { fetchApi } from "@/lib/api";
 
 interface ProviderHealth {
-  provider: string;
   active: number;
   total: number;
+  error: number;
+  exhausted: number;
+  pending: number;
+  disabled: number;
 }
 
 interface ModelsHealthResponse {
   overall: "ok" | "degraded" | "down";
   total_active: number;
   total_accounts: number;
-  providers: ProviderHealth[];
+  providers: Record<string, ProviderHealth>;
 }
 
 export default function ModelHealthBadge() {
@@ -84,7 +87,7 @@ export default function ModelHealthBadge() {
       : overall === "ok"
         ? "All OK"
         : overall === "degraded"
-          ? `${health!.providers.filter((p) => p.active === 0).length} degraded`
+          ? `${Object.values(health!.providers).filter((p) => p.active === 0).length} degraded`
           : overall === "down"
             ? "Down"
             : null;
@@ -150,7 +153,7 @@ export default function ModelHealthBadge() {
           )}
 
           {/* Provider table */}
-          {health && health.providers.length > 0 ? (
+          {health && Object.keys(health.providers).length > 0 ? (
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-[var(--muted-foreground)]">
@@ -161,9 +164,9 @@ export default function ModelHealthBadge() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">
-                {health.providers.map((p) => (
-                  <tr key={p.provider} className="text-[var(--foreground)]">
-                    <td className="py-1 pr-2 font-mono">{p.provider}</td>
+                {Object.entries(health.providers).map(([name, p]) => (
+                  <tr key={name} className="text-[var(--foreground)]">
+                    <td className="py-1 pr-2 font-mono">{name}</td>
                     <td className="py-1 text-right">{p.active}</td>
                     <td className="py-1 text-right">{p.total}</td>
                     <td className="py-1 text-right">

@@ -31,8 +31,8 @@ interface ProcessLog {
 
 const liveTypes: string[] = [
   "queue_added", "queue_processing", "login_progress", "login_success", "login_failed", "queue_complete", "queue_cleared",
+  "warmup_queue_complete", "warmup_queue_cleared",
 ];
-// Note: warmup_* events are explicitly filtered out - Login Logs only shows login operations
 
 function statusVariant(type: string): "success" | "warning" | "error" | "secondary" {
   if (type.includes("success") || type === "queue_complete" || type === "warmup_complete") return "success";
@@ -121,13 +121,15 @@ export default function BotLogs() {
   const connected = wsStatus === "open";
 
   async function load() {
-    const [logRes, queueRes] = await Promise.all([
+    const [logRes, queueRes, warmupQueueRes] = await Promise.all([
       fetchAuthLogs(300) as Promise<{ data: AuthLog[] }>,
       fetchAuthQueue().catch(() => null),
+      fetchWarmupQueue().catch(() => null),
     ]);
     // Filter out all warmup logs - Login Logs only shows login operations
     setLogs((current) => mergeLogs(current, (logRes.data || []).filter((log) => !log.type.startsWith("warmup_"))));
     setQueue(queueRes);
+    setWarmupQueue(warmupQueueRes);
   }
 
   const refreshQueues = useCallback(async () => {
@@ -154,7 +156,16 @@ export default function BotLogs() {
   }, []);
 
   useWsEvent(liveTypes, (msg) => {
-    // Skip all warmup events - Login Logs only shows login operations
+    if (msg.type === "warmup_queue_complete") {
+      setWarmupQueue((current: any) => ({ ...(current || {}), ...(msg.data || {}), queued: 0, active: 0, processing: false }));
+      return;
+    }
+    if (msg.type === "warmup_queue_cleared") {
+      setWarmupQueue((current: any) => ({ ...(current || {}), queued: 0, active: 0, processing: false }));
+      return;
+    }
+
+    // Skip remaining warmup events - Login Logs only shows login operations
     if (msg.type.startsWith("warmup_")) return;
 
     if (msg.type === "queue_complete") {

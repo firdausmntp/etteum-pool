@@ -33,6 +33,10 @@ _.log
 .poolprox.pid
 .etteum.log
 .etteum.pid
+.etteum.err
+.tunnel.log
+.tunnel.pid
+.tunnel.err
 .aiproxy.log
 .aiproxy.pid
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
@@ -64,6 +68,10 @@ data/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Drizzle migrations
 drizzle/
@@ -80,6 +88,14 @@ drizzle/
 # Claude plans (local only)
 .claude/plans/
 
+# Planning & temporary docs (local only)
+plans/
+*_PLAN.md
+*_SUMMARY.md
+*_UPGRADE.md
+*_FIX_SUMMARY.md
+CLAUDE.md
+
 
 # Playwright MCP runtime
 .playwright-mcp/
@@ -89,3 +105,4 @@ services/windsurf-api/
 
 # OpenCode session data (local only)
 .omo/
+session-ses_*.md

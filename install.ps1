@@ -1,10 +1,15 @@
+<# : Polyglot CMD/PS self-relaunch - this block is a comment in both CMD and PowerShell
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~f0" %*
+exit /b %ERRORLEVEL%
+#>
 # Etteum Pool installer for Windows
 #
 # One-command install (PowerShell):
 #   irm https://raw.githubusercontent.com/priyo000/etteum-pool/main/install.ps1 | iex
 #
-# Or, after cloning:
-#   powershell -ExecutionPolicy Bypass -File install.ps1
+# Or, double-click / run from CMD or PowerShell:
+#   install.ps1
 
 #Requires -Version 5.1
 
@@ -375,15 +380,9 @@ function Install-CliSymlink {
     New-Item -ItemType Directory -Path $target -Force | Out-Null
   }
 
-  # Copy etteum.ps1 and etteum.cmd to target
-  $srcPs1 = Join-Path $script:ProjectDir "etteum.ps1"
+  # Copy etteum.cmd to target (self-contained — no .ps1 needed)
   $srcCmd = Join-Path $script:ProjectDir "etteum.cmd"
 
-  if (Test-Path $srcPs1) {
-    Copy-Item $srcPs1 (Join-Path $target "etteum.ps1") -Force
-  } else {
-    Warn "etteum.ps1 not found at $srcPs1"
-  }
   if (Test-Path $srcCmd) {
     Copy-Item $srcCmd (Join-Path $target "etteum.cmd") -Force
   } else {
@@ -392,8 +391,25 @@ function Install-CliSymlink {
 
   Ok "Installed etteum command to $target"
 
-  if (-not ($env:Path -split ';' | Where-Object { $_ -eq $target })) {
-    Warn "Add to PATH: `$env:Path = `"$target;`$env:Path`""
+  # Persist POOLPROX_HOME so etteum.cmd always resolves the real project dir
+  # (copied .cmd loses its original path — env var is the reliable anchor)
+  [System.Environment]::SetEnvironmentVariable("POOLPROX_HOME", $script:ProjectDir, "User")
+  $env:POOLPROX_HOME = $script:ProjectDir
+
+  # Persist to user PATH registry so etteum works from any terminal after restart
+  # Normalize both sides (TrimEnd backslash + ToLower) to avoid duplicate entries
+  $targetNorm = $target.TrimEnd('\').ToLower()
+  $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+  $pathParts = $userPath -split ';' | Where-Object { $_ -ne "" }
+  $alreadyIn = $pathParts | Where-Object { $_.TrimEnd('\').ToLower() -eq $targetNorm }
+  if (-not $alreadyIn) {
+    $newPath = ($pathParts + $target) -join ';'
+    [System.Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    # Also update current session so etteum works immediately
+    $env:Path = "$target;$env:Path"
+    Ok "Added $target to user PATH (open a new terminal to use 'etteum' anywhere)"
+  } else {
+    Ok "$target already in PATH"
   }
 }
 
@@ -426,7 +442,7 @@ function Main {
   Write-Host "Quick Start:" -ForegroundColor White -BackgroundColor DarkBlue
   Write-Host ""
   Write-Host "  1. Start the server:" -ForegroundColor Cyan
-  Write-Host "     .\etteum.ps1 start"
+  Write-Host "     etteum start"
   Write-Host ""
   Write-Host "  2. Open the dashboard:" -ForegroundColor Cyan
   Write-Host "     http://localhost:1931"
@@ -436,10 +452,10 @@ function Main {
 
   Write-Host "Useful Commands:" -ForegroundColor White -BackgroundColor DarkBlue
   Write-Host ""
-  Write-Host "  .\etteum.ps1 status     # Check server status"
-  Write-Host "  .\etteum.ps1 logs       # View server logs"
-  Write-Host "  .\etteum.ps1 stop       # Stop the server"
-  Write-Host "  .\etteum.ps1 restart    # Restart the server"
+  Write-Host "  etteum status     # Check server status"
+  Write-Host "  etteum logs       # View server logs"
+  Write-Host "  etteum stop       # Stop the server"
+  Write-Host "  etteum restart    # Restart the server"
   Write-Host ""
 
   Write-Host "Tip: re-run this installer any time to pull updates and rebuild." -ForegroundColor Gray

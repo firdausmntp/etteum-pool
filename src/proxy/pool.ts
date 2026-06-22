@@ -287,7 +287,7 @@ class AccountPool {
   }
 
   /**
-   * Mark an account as exhausted (also zeroes out quota remaining)
+   * Mark an account as exhausted (also zeroes out quota remaining and disables account)
    */
   async markExhausted(accountId: number): Promise<void> {
     const [account] = await db
@@ -295,6 +295,7 @@ class AccountPool {
       .set({
         status: "exhausted",
         quotaRemaining: 0,
+        enabled: false,
         updatedAt: new Date(),
       })
       .where(eq(accounts.id, accountId))
@@ -304,31 +305,9 @@ class AccountPool {
       this.invalidate(account.provider as ProviderName);
       broadcast({
         type: "account_status",
-        data: { id: accountId, status: "exhausted", provider: account.provider },
+        data: { id: accountId, status: "exhausted", enabled: false, provider: account.provider },
       });
     }
-  }
-
-  /**
-   * Mark an account as errored
-   */
-  async markError(accountId: number, errorMessage: string): Promise<void> {
-    const [account] = await db
-      .update(accounts)
-      .set({
-        status: "error",
-        errorMessage,
-        updatedAt: new Date(),
-      })
-      .where(eq(accounts.id, accountId))
-      .returning();
-
-    if (account) this.invalidate(account.provider as ProviderName);
-
-    broadcast({
-      type: "account_status",
-      data: { id: accountId, status: "error", error: errorMessage },
-    });
   }
 
   async markTransientFailure(accountId: number, errorMessage: string): Promise<void> {

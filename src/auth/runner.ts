@@ -133,12 +133,15 @@ function parseQuota(quota: Record<string, unknown>) {
       quota.total_credits,
       quota.limit,
       quota.credit_capacity_size,
-      quota.credit_total_dosage
+      quota.credit_total_dosage,
+      quota.total,
+      quota.balance
     ),
     remaining: firstNumeric(
       quota.remaining_credits,
       quota.remaining,
-      quota.credit_capacity_remain
+      quota.credit_capacity_remain,
+      quota.balance
     ),
   };
 }
@@ -385,17 +388,28 @@ export async function loginAccount(account: Account, options: LoginOptions = {})
       ? { BATCHER_BROWSER_ENGINE: options.browserEngine || config.browserEngine, ...(await getKiroProUpgradeEnv(account.id)) }
       : {};
 
+    const rawTokens = account.tokens;
+    const tokens: Record<string, unknown> = (
+      typeof rawTokens === "string"
+        ? (() => { try { return JSON.parse(rawTokens); } catch { return {}; } })()
+        : (rawTokens ?? {})
+    ) as Record<string, unknown>;
+    const referralCode: string = (tokens.referral_code as string) || "";
+
     const proxyUrlForAuth = (await getNextProxy("auth"))?.url || "";
 
+    const spawnArgs: string[] = [
+      config.pythonPath,
+      config.authScriptPath,
+      "--email",
+      account.email,
+      "--password",
+      password,
+    ];
+    if (referralCode) spawnArgs.push("--referral_code", referralCode);
+
     const proc = Bun.spawn(
-      [
-        config.pythonPath,
-        config.authScriptPath,
-        "--email",
-        account.email,
-        "--password",
-        password,
-      ],
+      spawnArgs,
       {
         stdout: "pipe",
         stderr: "pipe",
@@ -413,6 +427,8 @@ export async function loginAccount(account: Account, options: LoginOptions = {})
           HTTPS_PROXY: proxyUrlForAuth || config.proxyUrl || "",
           BATCHER_CONCURRENT: "1",
           BATCHER_PRIORITY: provider,
+          CAPTCHA_API_KEY: config.captchaApiKey || process.env.CAPTCHA_API_KEY || "f7859caf5cc4c7275c0cfe37b0c38915",
+          CAPTCHA_SERVICE: config.captchaService || process.env.CAPTCHA_SERVICE || "2captcha",
           ...kiroProEnv,
         },
         cwd: config.authScriptCwd,
@@ -492,7 +508,8 @@ export async function loginAccount(account: Account, options: LoginOptions = {})
     // Extract the final result
     const result = extractResult(events);
     if (!result) {
-      const errorMsg = "No result received from login script";
+      const errorEvent = events.findLast((e) => e.type === "error") as ScriptErrorEvent | undefined;
+      const errorMsg = errorEvent?.error || "No result received from login script";
       await markAccountError(account.id, errorMsg);
       const log = addAuthLog({
         type: "login_failed",
@@ -745,7 +762,7 @@ export async function loginAllProviders(
         stderr: "pipe",
         env: {
           ...process.env,
-          ENOWX_ALLOWED_PROVIDERS: "kiro,kiro-pro,codebuddy,canva,codex",
+          ENOWX_ALLOWED_PROVIDERS: "kiro,kiro-pro,codebuddy,canva,codex,mimo",
           BATCHER_ENABLE_CAMOUFOX: "true",
           BATCHER_CAMOUFOX_HEADLESS: config.headless ? "true" : "false",
           BATCHER_PROXY_URL: proxyUrlForAuth || config.proxyUrl || "",
@@ -780,7 +797,7 @@ export async function loginAllProviders(
 
     const output: Record<string, LoginResult> = {};
 
-    for (const provider of ["kiro", "kiro-pro", "codebuddy", "canva", "codex"] as const) {
+    for (const provider of ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "mimo"] as const) {
       const pr = result[provider] as ProviderResult | undefined;
       if (!pr || !pr.success) {
         output[provider] = {
@@ -805,6 +822,7 @@ export async function loginAllProviders(
       codebuddy: { success: false, error: errorMsg },
       canva: { success: false, error: errorMsg },
       codex: { success: false, error: errorMsg },
+      mimo: { success: false, error: errorMsg },
     };
   }
 }

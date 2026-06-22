@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Search, Trash2, RefreshCw, RotateCcw, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, XCircle, Pencil, Eye, MoreHorizontal, LogIn, Flame, Users, Play, Loader2, Cpu, FlaskConical, Check } from "lucide-react";
+import { ArrowLeft, Search, Trash2, RefreshCw, RotateCcw, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, XCircle, Pencil, Eye, MoreHorizontal, LogIn, Flame, Users, Play, Loader2, Cpu, FlaskConical, Check, Copy, Plus } from "lucide-react";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel } from "@/components/ui/dropdown-menu";
 import { formatDateTimeID } from "@/lib/utils";
 import { useTimedMessage } from "@/hooks/useTimedMessage";
@@ -24,6 +24,7 @@ import {
   deleteAccount,
   fetchAccounts,
   fetchModels,
+  getMimoAccounts,
   loginAccount,
   loginAccounts,
   openPanel,
@@ -51,7 +52,7 @@ const PANEL_URLS: Record<string, string> = {
   qoder: "https://qoder.com/account/profile",
 };
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo";
 type Status = "active" | "exhausted" | "error" | "pending" | "disabled";
 
 interface CodexQuotaWindow {
@@ -79,6 +80,8 @@ interface Account {
   lastUsedAt?: string | null;
   lastLoginAt?: string | null;
   errorMessage?: string | null;
+  api_key?: string;
+  referral_code?: string | null;
   metadata?: {
     codex_quota?: CodexQuotaMetadata;
     overage?: { enabled: boolean; capable: boolean; used: number; cap: number; remaining: number } | null;
@@ -283,6 +286,11 @@ export default function AccountList() {
       setAccounts((data as Account[]).filter((a) => a.provider === provider));
       lastSyncRef.current = new Date();
       updateSyncDisplay();
+      if (provider === "mimo") {
+        const mimoRes = await getMimoAccounts();
+        const keyMap = new Map(mimoRes.accounts.map((a) => [a.id, { api_key: a.api_key, referral_code: a.referral_code }]));
+        setAccounts((prev) => prev.map((a) => ({ ...a, ...keyMap.get(a.id) })));
+      }
     } catch (err) {
       showError(err);
     } finally {
@@ -594,6 +602,12 @@ export default function AccountList() {
             {testingAllAccounts ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
             {testingAllAccounts ? `Testing… ${Object.values(accountTestResults).filter(r => r.status !== "idle").length}/${accounts.length}` : "Test All Accounts"}
           </Button>
+          {provider && provider !== "" && (
+            <Button variant="default" size="sm" onClick={() => navigate(`/accounts?addProvider=${provider}`)}>
+              <Plus className="w-3.5 h-3.5 mr-1.5" />
+              Add Account
+            </Button>
+          )}
         </div>
       </div>
 
@@ -744,6 +758,9 @@ export default function AccountList() {
                     Quota <SortIcon col="credit" />
                   </button>
                 </th>
+                {provider === "mimo" && (
+                  <th className="px-4 py-3 text-left text-xs text-[var(--muted-foreground)] uppercase tracking-wide font-medium">Referral</th>
+                )}
                 <th className="px-4 py-3 text-left text-xs text-[var(--muted-foreground)] uppercase tracking-wide font-medium">
                   <button onClick={() => toggleSort("lastLogin")} className="flex items-center cursor-pointer hover:text-[var(--foreground)] transition-colors select-none">
                     Last Login <SortIcon col="lastLogin" />
@@ -926,8 +943,12 @@ export default function AccountList() {
                       ) : (
                         <div>
                           <span className="text-xs font-mono text-[var(--foreground)]">
-                            {account.quotaRemaining?.toLocaleString() ?? "—"}
-                            <span className="text-[var(--muted-foreground)]"> / {account.quotaLimit?.toLocaleString() ?? "—"}</span>
+                            {provider === "mimo"
+                              ? `$${(account.quotaRemaining ?? 0).toFixed(2)}`
+                              : (account.quotaRemaining?.toLocaleString() ?? "—")}
+                            <span className="text-[var(--muted-foreground)]"> / {provider === "mimo"
+                              ? `$${(account.quotaLimit ?? 0).toFixed(2)}`
+                              : (account.quotaLimit?.toLocaleString() ?? "—")}</span>
                           </span>
                           {(account.quotaLimit ?? 0) > 0 && (
                             <div className="mt-1 h-1 w-full rounded-full bg-[var(--muted)]">
@@ -940,6 +961,26 @@ export default function AccountList() {
                         </div>
                       )}
                     </td>
+
+                    {/* Referral code — mimo only */}
+                    {provider === "mimo" && (
+                      <td className="px-4 py-3">
+                        {account.referral_code ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-xs text-[var(--muted-foreground)]">{account.referral_code}</span>
+                            <button
+                              onClick={() => navigator.clipboard.writeText(account.referral_code!)}
+                              className="p-0.5 rounded hover:bg-[var(--accent)] transition-colors"
+                              title="Copy referral code"
+                            >
+                              <Copy className="w-3 h-3 text-[var(--muted-foreground)]" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-[var(--muted-foreground)]">—</span>
+                        )}
+                      </td>
+                    )}
 
                     {/* Last login */}
                     <td className="px-4 py-3">
@@ -980,7 +1021,7 @@ export default function AccountList() {
                               <ExternalLink className="w-3.5 h-3.5 mr-2" /> Open Panel
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuSeparator />
+                            <DropdownMenuSeparator />
                           <DropdownMenuItem
                             onClick={() => handleDelete(account.id)}
                             className="text-[var(--error)] focus:text-[var(--error)]"

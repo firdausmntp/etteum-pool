@@ -2,7 +2,7 @@ import { sqliteTable, text, real, integer, uniqueIndex, index } from "drizzle-or
 
 export const accounts = sqliteTable("accounts", {
   id: integer("id").primaryKey({ autoIncrement: true }),
-  provider: text("provider").notNull(), // kiro | codebuddy | canva
+  provider: text("provider").notNull(), // kiro | kiro-pro | codebuddy | canva | codex | qoder | byok | mimo
   email: text("email").notNull(),
   password: text("password").notNull(), // encrypted
   status: text("status").notNull().default("pending"), // active | exhausted | error | pending
@@ -81,6 +81,7 @@ export const usageSummary = sqliteTable("usage_summary", {
 export const vccCards = sqliteTable("vcc_cards", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   number: text("number").notNull(),
+  bin: text("bin"),
   expMonth: text("exp_month").notNull(),
   expYear: text("exp_year").notNull(),
   cvv: text("cvv").notNull(),
@@ -97,6 +98,7 @@ export const vccTransactions = sqliteTable("vcc_transactions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   accountId: integer("account_id").references(() => accounts.id),
   cardLast4: text("card_last4").notNull(),
+  cardBin: text("card_bin"),
   cardBrand: text("card_brand"), // visa, mastercard, etc
   amount: real("amount"),
   currency: text("currency").default("usd"),

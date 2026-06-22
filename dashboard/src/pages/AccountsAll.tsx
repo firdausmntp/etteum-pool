@@ -62,7 +62,7 @@ const PANEL_URLS: Record<string, string> = {
   qoder: "https://qoder.com/account/profile",
 };
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo";
 
 interface Account {
   id: number;
@@ -77,7 +77,7 @@ interface Account {
   errorMessage?: string | null;
 }
 
-const ALL_PROVIDERS: readonly Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"];
+const ALL_PROVIDERS: readonly Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "mimo"];
 
 const STATUS_VARIANT: Record<string, "success" | "warning" | "error" | "secondary"> = {
   active: "success",
@@ -94,6 +94,7 @@ const PROVIDER_COLORS: Record<Provider, string> = {
   canva: "var(--color-canva, #8b5cf6)",
   codex: "var(--color-codex, #10b981)",
   qoder: "var(--color-qoder, #ef4444)",
+  mimo: "var(--color-mimo, #06b6d4)",
 };
 
 function labelProvider(p: string) {
