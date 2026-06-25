@@ -15,11 +15,11 @@ import { isBadUpstreamRequest, isInvalidModelError } from "./errors";
 import { prepareLogBody } from "./logging";
 import { resolveModelAlias } from "./model-mapping";
 import { eq, sql } from "drizzle-orm";
-import { providerList, refreshByokModels } from "./providers/registry";
+import { providerList, refreshByokModels, getNativeModelId } from "./providers/registry";
 
 export const proxyRouter = new Hono();
 
-const MAX_REQUEST_LOGS = 50;
+const MAX_REQUEST_LOGS = 200;
 
 /** Upsert a request's stats into the usage_summary table (hourly bucket) */
 async function upsertUsageSummary(entry: {
@@ -422,12 +422,42 @@ function wrapStreamWithUsageFinalizer(
     async start(controller) {
       const streamReader = stream.getReader();
       reader = streamReader;
+      const encoder = new TextEncoder();
+      let lineBuffer = "";
       try {
         while (true) {
           const { done, value } = await streamReader.read();
           if (done) break;
           observe(value);
-          controller.enqueue(value);
+
+          lineBuffer += decoder.decode(value, { stream: true });
+          const lines = lineBuffer.split("\n");
+          lineBuffer = lines.pop() || "";
+
+          for (const line of lines) {
+            let processedLine = line;
+            if (line.includes("data:")) {
+              const nativeModel = getNativeModelId(context.model, context.provider);
+              const nativeModelStr = JSON.stringify(nativeModel);
+              const prefixedModelStr = JSON.stringify(context.model);
+              if (processedLine.includes(nativeModelStr)) {
+                processedLine = processedLine.replaceAll(nativeModelStr, prefixedModelStr);
+              }
+            }
+            controller.enqueue(encoder.encode(processedLine + "\n"));
+          }
+        }
+        if (lineBuffer) {
+          let processedLine = lineBuffer;
+          if (processedLine.includes("data:")) {
+            const nativeModel = getNativeModelId(context.model, context.provider);
+            const nativeModelStr = JSON.stringify(nativeModel);
+            const prefixedModelStr = JSON.stringify(context.model);
+            if (processedLine.includes(nativeModelStr)) {
+              processedLine = processedLine.replaceAll(nativeModelStr, prefixedModelStr);
+            }
+          }
+          controller.enqueue(encoder.encode(processedLine));
         }
       } catch (error) {
         controller.error(error);
@@ -522,6 +552,11 @@ async function handleChatCompletion(body: ChatCompletionRequest) {
     broadcast({
       type: "request_started",
       data: { ...logEntry, id: created?.id, email: account.email, createdAt },
+    });
+
+    broadcast({
+      type: "request_log",
+      data: { ...logEntry, id: created?.id, email: account.email, createdAt, status: "streaming" },
     });
 
     result.stream = wrapStreamWithUsageFinalizer(result.stream, {

@@ -11,12 +11,13 @@ import { websocketHandler, getClientCount } from "./ws/index";
 import { isValidApiKey } from "./api/keys";
 import { autoWarmupScheduler } from "./auth/warmup-scheduler";
 import { db } from "./db/index";
-import { filterRules } from "./db/schema";
+import { filterRules, accounts, customModels } from "./db/schema";
 import { sql } from "drizzle-orm";
 import { PUDIDIL_FILTERS } from "./proxy/filters";
 import { loadFilterCache } from "./proxy/filter-cache";
 import { ensureModelMappingTable, seedModelMappings, loadModelMappingCache } from "./proxy/model-mapping";
-import { refreshByokModels } from "./proxy/providers/registry";
+import { refreshByokModels, loadCustomModelsCache } from "./proxy/providers/registry";
+import { combosRouter } from "./api/model-combos";
 
 // Run database migrations on startup
 await runMigrations();
@@ -61,6 +62,15 @@ try {
   console.error("[BYOK] Cache warm-up skipped:", e instanceof Error ? e.message : e);
 }
 
+// Pre-warm custom models cache
+try {
+  console.log("[Registry] Loading custom models cache...");
+  await loadCustomModelsCache();
+  console.log("[Registry] Custom models cache loaded");
+} catch (e) {
+  console.error("[Registry] Custom models cache load skipped:", e instanceof Error ? e.message : e);
+}
+
 // Start auto-warmup scheduler (reads settings from DB)
 await autoWarmupScheduler.start();
 
@@ -69,6 +79,18 @@ await autoStartRelay();
 
 // Create Hono app
 const app = new Hono();
+
+// OAuth callback capture — used by Antigravity Google OAuth flow
+// Must be before auth middleware
+const _oauthCallbacks = new Map<string, { code: string; state: string; ts: number }>();
+
+// Cleanup stale callbacks older than 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of _oauthCallbacks) {
+    if (v.ts < cutoff) _oauthCallbacks.delete(k);
+  }
+}, 60_000);
 
 // Middleware
 app.use("*", cors());
@@ -122,8 +144,8 @@ app.use("/relay/*", async (c, next) => {
 
 // API Key authentication for management API
 app.use("/api/*", async (c, next) => {
-  // Allow health check, info, and key validation without auth
-  if (c.req.path === "/api/health" || c.req.path === "/api/info" || c.req.path === "/api/keys/test") {
+  // Allow health check, info, key validation, and OAuth poll without auth
+  if (c.req.path === "/api/health" || c.req.path === "/api/info" || c.req.path === "/api/keys/test" || c.req.path === "/api/oauth-callback/poll" || c.req.path === "/api/temp-debug-db") {
     await next();
     return;
   }
@@ -142,11 +164,96 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
+// Google OAuth callback — receives redirect from accounts.google.com
+app.get("/oauth-callback", (c) => {
+  const code = c.req.query("code") || "";
+  const state = c.req.query("state") || "";
+  if (code && state) {
+    _oauthCallbacks.set(state, { code, state, ts: Date.now() });
+  }
+  return c.html("<html><body><h2>Login successful! You may close this window.</h2></body></html>");
+});
+
+// Poll endpoint for Python script to pick up the code
+app.get("/api/oauth-callback/poll", (c) => {
+  const state = c.req.query("state") || "";
+  const entry = _oauthCallbacks.get(state);
+  if (entry) {
+    _oauthCallbacks.delete(state);
+    return c.json({ code: entry.code, state: entry.state });
+  }
+  return c.json({ waiting: true });
+});
+
+app.get("/temp-debug-db", async (c) => {
+  const accountsData = await db.select().from(accounts);
+  const customModelsData = await db.select().from(customModels);
+  return c.json({ accounts: accountsData, customModels: customModelsData });
+});
+
+app.get("/test-google-projects", async (c) => {
+  const refreshToken = "ANTIGRAVITY_REFRESH_TOKEN_PLACEHOLDER";
+  
+  // 1. Refresh access token
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
+      client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
+    }),
+  });
+  
+  if (!tokenRes.ok) {
+    return c.json({ error: "refresh failed", status: tokenRes.status, text: await tokenRes.text() });
+  }
+  
+  const tokenData = await tokenRes.json() as any;
+  const accessToken = tokenData.access_token;
+  
+  const endpoints = [
+    "https://cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    "https://autopush-cloudcode-pa.sandbox.googleapis.com",
+    "https://cloudresourcemanager.googleapis.com"
+  ];
+  
+  const results: Record<string, any> = {};
+  
+  for (const endpoint of endpoints) {
+    try {
+      const isResourceManager = endpoint.includes("cloudresourcemanager");
+      const path = isResourceManager ? "/v1/projects" : "/v1/projects";
+      const res = await fetch(`${endpoint}${path}`, {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+        }
+      });
+      const text = await res.text();
+      try {
+        results[endpoint] = JSON.parse(text);
+      } catch {
+        results[endpoint] = { status: res.status, raw: text };
+      }
+    } catch (err: any) {
+      results[endpoint] = { error: err.message };
+    }
+  }
+  
+  return c.json({
+    accessToken: accessToken.slice(0, 15) + "...",
+    results
+  });
+});
+
 // Mount routes
 app.route("/", proxyRouter); // /v1/chat/completions, /v1/models
 app.route("/api", apiRouter); // /api/accounts, /api/settings, /api/stats
 app.route("/api/auth", authRouter); // /api/auth/login, /api/auth/queue
 app.route("/api/relay", relayApiRouter); // /api/relay/* (management)
+app.route("/api/model-combos", combosRouter); // /api/model-combos (combo chains)
 app.route("/relay", relayProxyRouter); // /relay/:tunnelId/* (tunnel HTTP proxy)
 
 // Health/info endpoint (moved from / to /api/health)

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { db } from "../db/index";
-import { modelMappings, settings } from "../db/schema";
+import { modelMappings, modelCombos, settings } from "../db/schema";
 import { asc, eq } from "drizzle-orm";
 import { invalidateModelMappingCache } from "../proxy/model-mapping";
 import { getAllModels } from "../proxy/router";
@@ -51,7 +51,11 @@ async function setMasterEnabled(enabled: boolean): Promise<void> {
 integrationRouter.get("/", async (c) => {
   const mappings = await db.select().from(modelMappings).orderBy(asc(modelMappings.priority));
   const enabled = await getMasterEnabled();
-  const models = getAllModels().map((m) => ({ id: m.id, owned_by: m.owned_by }));
+  const combos = await db.select().from(modelCombos).where(eq(modelCombos.enabled, true));
+  const models = [
+    ...getAllModels().map((m) => ({ id: m.id, owned_by: m.owned_by })),
+    ...combos.map((c) => ({ id: c.name, owned_by: "combo" })),
+  ];
   return c.json({ enabled, mappings, models });
 });
 
@@ -214,7 +218,7 @@ async function buildProxyInfo(body: {
     apiKeyRow[0]?.value || process.env.API_KEY || "pool-proxy-secret-key";
   const proxyOrigin = body.baseUrl || `http://localhost:${config.port}`;
   const openaiBaseUrl = `${proxyOrigin}/v1`;
-  const modelId = body.modelId || "kp-sonnet-4.6";
+  const modelId = body.modelId || "kp/sonnet-4.6";
 
   // Build lightweight model list for config generators
   const models = getAllModels().map((m) => ({
@@ -238,14 +242,25 @@ async function buildProxyInfo(body: {
 integrationRouter.get("/clients", async (c) => {
   try {
     const clients = getClientList();
-    const models = getAllModels().map((m) => ({
-      id: m.id,
-      owned_by: m.owned_by,
-      context_window: m.context_window,
-      max_output: m.max_output,
-      thinking: m.thinking,
-      vision: m.vision,
-    }));
+    const combos = await db.select().from(modelCombos).where(eq(modelCombos.enabled, true));
+    const models = [
+      ...getAllModels().map((m) => ({
+        id: m.id,
+        owned_by: m.owned_by,
+        context_window: m.context_window,
+        max_output: m.max_output,
+        thinking: m.thinking,
+        vision: m.vision,
+      })),
+      ...combos.map((c) => ({
+        id: c.name,
+        owned_by: "combo",
+        context_window: null,
+        max_output: null,
+        thinking: null,
+        vision: null,
+      })),
+    ];
     return c.json({ clients, models });
   } catch (error: any) {
     return c.json({ error: error.message }, 500);

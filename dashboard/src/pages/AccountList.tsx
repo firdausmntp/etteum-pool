@@ -44,6 +44,8 @@ const PROVIDER_PREFIX: Record<string, string> = {
   canva: "canva-",
   codex: "codex-",
   qoder: "qd-",
+  alibaba: "alibaba-",
+  antigravity: "antigravity-",
 };
 
 const PANEL_URLS: Record<string, string> = {
@@ -52,7 +54,7 @@ const PANEL_URLS: Record<string, string> = {
   qoder: "https://qoder.com/account/profile",
 };
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo" | "alibaba" | "antigravity";
 type Status = "active" | "exhausted" | "error" | "pending" | "disabled";
 
 interface CodexQuotaWindow {

@@ -1,5 +1,5 @@
 import type { ChatCompletionRequest, ProviderResult } from "./providers/base";
-import { providers, getAllModels, type ProviderName } from "./providers/registry";
+import { providers, getAllModels, type ProviderName, getNativeModelId } from "./providers/registry";
 import { isNonAccountRequestError, isTransientError } from "./errors";
 import { applyPudidilFilters } from "./filters";
 import { pool } from "./pool";
@@ -9,6 +9,37 @@ import {
   getCompressionConfig,
   type CompressionStats,
 } from "./compression";
+import { db } from "../db";
+import { modelCombos } from "../db/schema";
+import { eq } from "drizzle-orm";
+
+// Combo cache — invalidated on write via invalidateComboCache()
+let _comboCache: Map<string, string[]> | null = null;
+
+async function loadComboCache(): Promise<Map<string, string[]>> {
+  if (_comboCache) return _comboCache;
+  const rows = await db.select().from(modelCombos).where(eq(modelCombos.enabled, true));
+  _comboCache = new Map();
+  for (const row of rows) {
+    const models = row.modelsJson as unknown as string[];
+    if (Array.isArray(models) && models.length > 0) {
+      _comboCache.set(row.name, models);
+    }
+  }
+  return _comboCache;
+}
+
+export function invalidateComboCache() {
+  _comboCache = null;
+}
+
+/**
+ * Resolve a model name to either the same model (no combo) or a chain of models (combo).
+ */
+export async function resolveModelChain(modelName: string): Promise<string[]> {
+  const combos = await loadComboCache();
+  return combos.get(modelName) ?? [modelName];
+}
 
 export interface RouteResult {
   result: ProviderResult;
@@ -89,52 +120,67 @@ function sanitizeRequest(request: ChatCompletionRequest): ChatCompletionRequest 
 
 /**
  * Route a chat completion request to the appropriate provider/account.
- * Implements retry logic with fallback to next account.
+ * Implements retry logic with fallback to next account and model chain fallback.
  */
 export async function routeRequest(
   request: ChatCompletionRequest,
   stream: boolean
 ): Promise<RouteResult> {
-  // Apply content filters to strip Claude Code identity, billing headers, etc.
+  // Apply content filters to strip the assistant identity, billing headers, etc.
   const sanitizedRequest = sanitizeRequest(request);
 
+  // Resolve model chain — if the model is a combo name, get the ordered list of fallback models
+  const modelChain = await resolveModelChain(sanitizedRequest.model);
+
   const hasImages = requestHasImages(sanitizedRequest);
-  const providerName = pool.getProviderForModel(sanitizedRequest.model);
-  if (!providerName) {
-    throw new Error(`No provider found for model: ${sanitizedRequest.model}`);
-  }
 
-  // Apply compression pipeline (RTK + DCP + Caveman + image dedupe + cache markers).
-  // Failures here are non-fatal — fall back to the sanitized request and move on.
-  let compressedRequest = sanitizedRequest;
-  let compressionStats: CompressionStats | undefined;
-  try {
-    const cfg = await getCompressionConfig();
-    const out = compressRequest(sanitizedRequest, cfg, providerName);
-    compressedRequest = out.request;
-    compressionStats = out.stats;
-  } catch (err) {
-    console.error("[Compression] Failed, passing request through unchanged:", err);
-  }
-
-  const provider = providers[providerName];
-  if (!provider) {
-    throw new Error(`Provider not configured: ${providerName}`);
-  }
-
-  // Reject image requests for models that don't support vision
-  if (hasImages) {
-    const modelInfo = provider.getModelInfo(sanitizedRequest.model);
-    if (modelInfo && !modelInfo.vision) {
-      throw new Error(
-        `Model "${sanitizedRequest.model}" does not support image/vision inputs. Use a vision-capable model instead.`
-      );
+  // Try each model in the chain until one succeeds
+  let lastChainError = "";
+  for (let chainIdx = 0; chainIdx < modelChain.length; chainIdx++) {
+    const currentModel = modelChain[chainIdx];
+    if (!currentModel) continue;
+    const providerName = pool.getProviderForModel(currentModel);
+    if (!providerName) {
+      lastChainError = `No provider found for model: ${currentModel}`;
+      console.error(`[Combo] ${lastChainError}, trying next in chain...`);
+      continue;
     }
-  }
 
-  // Try up to 3 accounts before giving up
-  const maxRetries = 3;
-  let lastError = "";
+    // Build request with resolved model
+    const resolvedRequest: ChatCompletionRequest = { ...sanitizedRequest, model: currentModel };
+
+    // Apply compression pipeline (RTK + DCP + Caveman + image dedupe + cache markers).
+    // Failures here are non-fatal — fall back to the sanitized request and move on.
+    let compressedRequest = resolvedRequest;
+    let compressionStats: CompressionStats | undefined;
+    try {
+      const cfg = await getCompressionConfig();
+      const out = compressRequest(resolvedRequest, cfg, providerName);
+      compressedRequest = out.request;
+      compressionStats = out.stats;
+    } catch (err) {
+      console.error("[Compression] Failed, passing request through unchanged:", err);
+    }
+
+    const provider = providers[providerName];
+    if (!provider) {
+      lastChainError = `Provider not configured: ${providerName}`;
+      continue;
+    }
+
+    // Reject image requests for models that don't support vision
+    if (hasImages) {
+      const modelInfo = provider.getModelInfo(currentModel);
+      if (modelInfo && !modelInfo.vision) {
+        lastChainError = `Model "${currentModel}" does not support image/vision inputs`;
+        console.error(`[Combo] ${lastChainError}, trying next in chain...`);
+        continue;
+      }
+    }
+
+    // Try up to 3 accounts before giving up
+    const maxRetries = 3;
+    let lastError = "";
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // BYOK uses prefix-based account lookup (not the generic pool),
@@ -154,9 +200,12 @@ export async function routeRequest(
     try {
       pool.trackRequestStart(account.id);
       tracked = true;
+      const nativeModel = getNativeModelId(compressedRequest.model, providerName);
+      const executionRequest = { ...compressedRequest, model: nativeModel };
+
       const result = stream
-        ? await provider.chatCompletionStream(account, compressedRequest)
-        : await provider.chatCompletion(account, compressedRequest);
+        ? await provider.chatCompletionStream(account, executionRequest)
+        : await provider.chatCompletion(account, executionRequest);
 
       const durationMs = Date.now() - startTime;
 
@@ -166,6 +215,12 @@ export async function routeRequest(
           await pool.updateTokens(account.id, result.tokens);
         }
         await pool.markUsed(account.id);
+
+        // Restore the original prefixed model ID on the final response body
+        if (result.response) {
+          result.response.model = currentModel;
+        }
+
         return { result, account, provider: providerName, durationMs, compressionStats };
       }
 
@@ -260,8 +315,15 @@ export async function routeRequest(
     }
   }
 
+  // All accounts failed for this model — if there are more models in the chain, try the next one
+  lastChainError = `All accounts failed for ${providerName} (model: ${currentModel}). Last error: ${lastError}`;
+  console.error(`[Combo] ${lastChainError}, trying next in chain...`);
+  continue;
+}
+
+  // All models in the chain failed
   throw new Error(
-    `All accounts failed for ${providerName}. Last error: ${lastError}`
+    `All models in combo chain failed. Original model: ${sanitizedRequest.model}. Last error: ${lastChainError}`
   );
 }
 

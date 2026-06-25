@@ -219,6 +219,42 @@ export async function fetchModels() {
   return fetchApi("/v1/models");
 }
 
+export interface CustomModelDTO {
+  id: number;
+  modelId: string;
+  ownedBy: string;
+  contextWindow?: number;
+  maxOutput?: number;
+  thinking: boolean;
+  vision: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export async function fetchCustomModels() {
+  return fetchApi<{ count: number; data: CustomModelDTO[] }>("/api/custom-models");
+}
+
+export async function createCustomModel(payload: Partial<CustomModelDTO>) {
+  return fetchApi<CustomModelDTO>("/api/custom-models", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateCustomModel(id: number, payload: Partial<CustomModelDTO>) {
+  return fetchApi<CustomModelDTO>(`/api/custom-models/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteCustomModel(id: number) {
+  return fetchApi<{ success: boolean }>(`/api/custom-models/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export interface ModelMappingDTO {
   id?: number;
   sourcePattern: string;
@@ -953,6 +989,83 @@ export async function testMimoAccount(id: number): Promise<{
   });
 }
 
+// ─── Alibaba API ──────────────────────────────────────────────────────────────
+
+export async function getAlibabaAccounts(): Promise<{ accounts: any[] }> {
+  return fetchApi("/api/accounts/alibaba");
+}
+
+export async function addAlibabaAccount(data: {
+  email: string;
+  sk_key: string;
+  workspace_id: string;
+}): Promise<{ success: boolean; id: number; email: string }> {
+  return fetchApi("/api/accounts/alibaba", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteAlibabaAccount(id: number): Promise<{ success: boolean; id: number }> {
+  return fetchApi(`/api/accounts/alibaba/${id}`, { method: "DELETE" });
+}
+
+export async function testAlibabaAccount(id: number): Promise<{
+  success: boolean;
+  latency_ms?: number;
+  error?: string;
+}> {
+  return fetchApi(`/api/accounts/alibaba/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+// ─── Antigravity API ─────────────────────────────────────────────────────────
+
+export async function getAntigravityAccounts(): Promise<{ accounts: any[] }> {
+  return fetchApi("/api/accounts/antigravity");
+}
+
+export async function addAntigravityAccount(data: {
+  email: string;
+  refresh_token: string;
+  project_id?: string;
+}): Promise<{ success: boolean; id: number; email: string }> {
+  return fetchApi("/api/accounts/antigravity", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteAntigravityAccount(id: number): Promise<{ success: boolean; id: number }> {
+  return fetchApi(`/api/accounts/antigravity/${id}`, { method: "DELETE" });
+}
+
+export async function testAntigravityAccount(id: number): Promise<{
+  success: boolean;
+  latency_ms?: number;
+  error?: string;
+}> {
+  return fetchApi(`/api/accounts/antigravity/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function refreshAntigravityToken(id: number): Promise<{
+  success: boolean;
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  error?: string;
+}> {
+  return fetchApi(`/api/accounts/antigravity/${id}/refresh-token`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 // ─── Relay / Tunnel API ──────────────────────────────────────────────────────
 
 export async function fetchTunnelStatus(): Promise<any> {
@@ -1063,4 +1176,38 @@ export async function bulkLoginMimo(accounts: string[], referralCode?: string, c
     method: 'POST',
     body: JSON.stringify({ accounts: entries, ...(referralCode ? { referral_code: referralCode } : {}), ...(concurrency !== undefined ? { concurrency } : {}) }),
   });
+}
+
+// ─── Model Combos API ─────────────────────────────────────────────────────────
+
+export interface ModelComboDTO {
+  id: number;
+  name: string;
+  label: string | null;
+  modelsJson: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchCombos(): Promise<{ combos: ModelComboDTO[] }> {
+  return fetchApi("/api/model-combos");
+}
+
+export async function createCombo(data: { name: string; label?: string; models: string[] }): Promise<{ success: boolean; combo: ModelComboDTO }> {
+  return fetchApi("/api/model-combos", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateCombo(name: string, data: { name?: string; label?: string; models?: string[]; enabled?: boolean }): Promise<{ success: boolean; combo: ModelComboDTO }> {
+  return fetchApi(`/api/model-combos/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCombo(name: string): Promise<{ success: boolean }> {
+  return fetchApi(`/api/model-combos/${encodeURIComponent(name)}`, { method: "DELETE" });
 }

@@ -10,6 +10,7 @@ import { warmupQueue } from "../auth/warmup-queue";
 import { warmupAccount } from "../auth/warmup-runner";
 import { pool, type ProviderName } from "../proxy/pool";
 import { activateQoderPat } from "../proxy/providers/qoder";
+import { fetchProjectId } from "../proxy/providers/antigravity";
 
 export const accountsRouter = new Hono();
 
@@ -442,6 +443,318 @@ accountsRouter.post("/byok/:id/test", async (c) => {
 
 
 /**
+ * POST /api/accounts/alibaba - Add a new Alibaba account
+ * Body: { email: string, sk_key: string, workspace_id: string }
+ */
+accountsRouter.post("/alibaba", async (c) => {
+  const body = await c.req.json() as { email?: string; sk_key?: string; workspace_id?: string };
+  const { email, sk_key, workspace_id } = body;
+
+  if (!email || !sk_key || !workspace_id) {
+    return c.json({ error: "email, sk_key, and workspace_id are required" }, 400);
+  }
+
+  const tokens = JSON.stringify({ sk_key, workspace_id, email });
+  const encryptedKey = encrypt(tokens);
+
+  try {
+    const result = await db.insert(accounts).values({
+      provider: "alibaba",
+      email,
+      password: encryptedKey,
+      status: "active",
+      tokens,
+      quotaLimit: 1_000_000,
+      quotaRemaining: 1_000_000,
+    }).returning();
+    const created = result[0];
+    pool.invalidate("alibaba");
+    broadcast({ type: "account_created", data: { provider: "alibaba", email, id: created?.id } });
+    return c.json({ success: true, id: created?.id, email, provider: "alibaba" }, 201);
+  } catch (error: any) {
+    if (error?.code === "SQLITE_CONSTRAINT_UNIQUE" || (error.message && error.message.includes("unique"))) {
+      return c.json({ error: "Account with this email already exists" }, 409);
+    }
+    return c.json({ error: `Failed to add account: ${error.message}` }, 500);
+  }
+});
+
+/**
+ * GET /api/accounts/alibaba - List all Alibaba accounts
+ */
+accountsRouter.get("/alibaba", async (c) => {
+  const rows = await db.select()
+    .from(accounts)
+    .where(eq(accounts.provider, "alibaba"));
+
+  return c.json({
+    accounts: rows.map((a) => ({
+      ...a,
+      password: "***",
+      tokens: a.tokens ? JSON.parse(a.tokens as string) as Record<string, unknown> : null,
+    })),
+  });
+});
+
+/**
+ * DELETE /api/accounts/alibaba/:id - Delete an Alibaba account
+ */
+accountsRouter.delete("/alibaba/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const account = await db.select().from(accounts).where(eq(accounts.id, id)).then((r) => r[0]);
+
+  if (!account || account.provider !== "alibaba") {
+    return c.json({ error: "Account not found" }, 404);
+  }
+
+  await db.delete(accounts).where(eq(accounts.id, id));
+  pool.invalidate("alibaba");
+  broadcast({ type: "alibaba_deleted", data: { id } });
+  return c.json({ success: true, id });
+});
+
+/**
+ * POST /api/accounts/alibaba/:id/test - Test an Alibaba account
+ */
+accountsRouter.post("/alibaba/:id/test", async (c) => {
+  const id = Number(c.req.param("id"));
+  const account = await db.select().from(accounts).where(eq(accounts.id, id)).then((r) => r[0]);
+
+  if (!account || account.provider !== "alibaba") {
+    return c.json({ error: "Account not found" }, 404);
+  }
+
+  const alibabaTokens = typeof account.tokens === "string"
+    ? JSON.parse(account.tokens) as Record<string, unknown>
+    : account.tokens as Record<string, unknown> | null;
+  const skKey = String(alibabaTokens?.sk_key || "");
+  const workspaceId = String(alibabaTokens?.workspace_id || "");
+
+  if (!skKey || !workspaceId) {
+    return c.json({ success: false, error: "No sk_key or workspace_id configured" }, 400);
+  }
+
+  const url = `https://${workspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  const startTime = Date.now();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${skKey}`,
+      },
+      body: JSON.stringify({ model: "qwen-flash", messages: [{ role: "user", content: "Hi" }], max_tokens: 1 }),
+      signal: controller.signal,
+    });
+    const latencyMs = Date.now() - startTime;
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      return c.json({ success: true, latency_ms: latencyMs });
+    }
+    const text = await response.text();
+    return c.json({ success: false, latency_ms: latencyMs, status: response.status, error: text.slice(0, 200) });
+  } catch (error) {
+    clearTimeout(timeout);
+    return c.json({ success: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * Helper: detect if a credential value is a plain password (not an OAuth refresh token).
+ * A value is a password if it does NOT start with "1//" and does NOT contain a period.
+ */
+function isPassword(value: string): boolean {
+  return !value.startsWith("1//") && !value.includes(".");
+}
+
+/**
+ * POST /api/accounts/antigravity - Add a new Antigravity account
+ * Body: { email: string, refresh_token?: string, password?: string, project_id?: string }
+ *
+ * MODE 1 (Login Flow): body has `password`, OR `refresh_token` is detected as a plain password
+ *   → insert with status "pending", store { email, password } in tokens, enqueue loginQueue
+ * MODE 2 (Token Flow): body has a real refresh_token (starts with "1//" or contains ".")
+ *   → insert with status "active" (existing behavior)
+ */
+accountsRouter.post("/antigravity", async (c) => {
+  const body = await c.req.json() as { email?: string; refresh_token?: string; password?: string; project_id?: string };
+  const { email, project_id } = body;
+
+  if (!email) {
+    return c.json({ error: "email is required" }, 400);
+  }
+
+  // Determine mode: explicit password field, or refresh_token value that looks like a password
+  const explicitPassword = body.password?.trim();
+  const rawCredential = body.refresh_token?.trim();
+
+  const usePasswordMode = explicitPassword
+    ? true
+    : rawCredential
+      ? isPassword(rawCredential)
+      : false;
+
+  if (!explicitPassword && !rawCredential) {
+    return c.json({ error: "refresh_token or password is required" }, 400);
+  }
+
+  // MODE 1: Login flow — store password, insert as pending, enqueue
+  if (usePasswordMode) {
+    const password = explicitPassword || rawCredential!;
+    const tokens = JSON.stringify({ email, password });
+    const encryptedKey = encrypt(password);
+
+    try {
+      const result = await db.insert(accounts).values({
+        provider: "antigravity",
+        email,
+        password: encryptedKey,
+        status: "pending",
+        tokens,
+        quotaLimit: 1_000_000,
+        quotaRemaining: 1_000_000,
+      }).returning();
+      const created = result[0];
+
+      if (!created) {
+        return c.json({ error: "Failed to create account" }, 500);
+      }
+
+      loginQueue.enqueue(created.id);
+      broadcast({ type: "account_created", data: { provider: "antigravity", email, id: created.id } });
+      return c.json({ success: true, id: created.id, email, provider: "antigravity", queued: true }, 201);
+    } catch (error: any) {
+      if (error?.code === "SQLITE_CONSTRAINT_UNIQUE" || (error.message && error.message.includes("unique"))) {
+        return c.json({ error: "Account with this email already exists" }, 409);
+      }
+      return c.json({ error: `Failed to add account: ${error.message}` }, 500);
+    }
+  }
+
+  // MODE 2: Token flow — real refresh_token, insert as active (existing behavior)
+  const refresh_token = rawCredential!;
+
+  // Store tokens: refresh_token|project_id format (matching antigravity-auth convention)
+  const tokens = JSON.stringify({
+    refresh_token: project_id ? `${refresh_token}|${project_id}` : refresh_token,
+    project_id: project_id || "",
+    email,
+  });
+  const encryptedKey = encrypt(tokens);
+
+  try {
+    const result = await db.insert(accounts).values({
+      provider: "antigravity",
+      email,
+      password: encryptedKey,
+      status: "active",
+      tokens,
+      quotaLimit: 1_000_000,
+      quotaRemaining: 1_000_000,
+    }).returning();
+    const created = result[0];
+    // Antigravity accounts use pre-stored OAuth refresh tokens — no browser login needed.
+    // Skip loginQueue and go directly to active. Token refresh happens per-request via
+    // the AlibabaProvider.refreshToken() method.
+    pool.invalidate("antigravity");
+    broadcast({ type: "account_created", data: { provider: "antigravity", email, id: created?.id } });
+    return c.json({ success: true, id: created?.id, email, provider: "antigravity" }, 201);
+  } catch (error: any) {
+    if (error?.code === "SQLITE_CONSTRAINT_UNIQUE" || (error.message && error.message.includes("unique"))) {
+      return c.json({ error: "Account with this email already exists" }, 409);
+    }
+    return c.json({ error: `Failed to add account: ${error.message}` }, 500);
+  }
+});
+
+/**
+ * GET /api/accounts/antigravity - List all Antigravity accounts
+ */
+accountsRouter.get("/antigravity", async (c) => {
+  const rows = await db.select()
+    .from(accounts)
+    .where(eq(accounts.provider, "antigravity"));
+
+  return c.json({
+    accounts: rows.map((a) => ({
+      ...a,
+      password: "***",
+      tokens: a.tokens ? JSON.parse(a.tokens as string) as Record<string, unknown> : null,
+    })),
+  });
+});
+
+/**
+ * DELETE /api/accounts/antigravity/:id - Delete an Antigravity account
+ */
+accountsRouter.delete("/antigravity/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const account = await db.select().from(accounts).where(eq(accounts.id, id)).then((r) => r[0]);
+
+  if (!account || account.provider !== "antigravity") {
+    return c.json({ error: "Account not found" }, 404);
+  }
+
+  await db.delete(accounts).where(eq(accounts.id, id));
+  pool.invalidate("antigravity");
+  broadcast({ type: "antigravity_deleted", data: { id } });
+  return c.json({ success: true, id });
+});
+
+/**
+ * POST /api/accounts/antigravity/:id/refresh-token - Refresh access token for an Antigravity account
+ */
+accountsRouter.post("/antigravity/:id/refresh-token", async (c) => {
+  const id = Number(c.req.param("id"));
+  const account = await db.select().from(accounts).where(eq(accounts.id, id)).then((r) => r[0]);
+
+  if (!account || account.provider !== "antigravity") {
+    return c.json({ error: "Account not found" }, 404);
+  }
+
+  const agTokens = typeof account.tokens === "string"
+    ? JSON.parse(account.tokens) as Record<string, unknown>
+    : account.tokens as Record<string, unknown> | null;
+  const refreshToken = String(agTokens?.refresh_token || "").split("|")[0];
+
+  if (!refreshToken) {
+    return c.json({ success: false, error: "No refresh_token configured" }, 400);
+  }
+
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
+        client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const errData = (await tokenRes.json().catch(() => ({}))) as any;
+      return c.json({ success: false, error: errData.error_description || errData.error || "Token refresh failed" }, 401);
+    }
+
+    const tokenData = (await tokenRes.json()) as any;
+    return c.json({
+      success: true,
+      access_token: tokenData.access_token,
+      expires_in: tokenData.expires_in,
+      refresh_token: tokenData.refresh_token || refreshToken,
+    });
+  } catch (error) {
+    return c.json({ success: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
  * POST /api/accounts/mimo - Add a new MiMo account
  * Body: { email: string, api_key: string }
  */
@@ -456,7 +769,7 @@ accountsRouter.post("/mimo", async (c) => {
   const encryptedKey = encrypt(api_key);
 
   try {
-    const result = await db.insert(accounts).values({
+    const [created] = await db.insert(accounts).values({
       provider: "mimo",
       email,
       password: encryptedKey,
@@ -465,11 +778,7 @@ accountsRouter.post("/mimo", async (c) => {
       enabled: true,
       quotaLimit: 0,
       quotaRemaining: 0,
-    });
-
-    const created = await db.select().from(accounts)
-      .where(eq(accounts.id, Number(result.lastInsertRowid)))
-      .get();
+    }).returning();
 
     broadcast({ type: "account_created", data: { provider: "mimo", email } });
 
@@ -615,7 +924,7 @@ accountsRouter.post("/mimo/login", async (c) => {
   }
 
   try {
-    const result = await db.insert(accounts).values({
+    const [created] = await db.insert(accounts).values({
       provider: "mimo",
       email,
       password: encrypt(password),
@@ -624,11 +933,7 @@ accountsRouter.post("/mimo/login", async (c) => {
       enabled: true,
       quotaLimit: 0,
       quotaRemaining: 0,
-    });
-
-    const created = await db.select().from(accounts)
-      .where(eq(accounts.id, Number(result.lastInsertRowid)))
-      .get();
+    }).returning();
 
     if (!created) {
       return c.json({ error: "Failed to create account" }, 500);
@@ -691,7 +996,7 @@ accountsRouter.post("/mimo/bulk-login", async (c) => {
 
   for (const { email, password } of entries) {
     try {
-      const result = await db.insert(accounts).values({
+      const [created] = await db.insert(accounts).values({
         provider: "mimo",
         email,
         password: encrypt(password),
@@ -700,11 +1005,7 @@ accountsRouter.post("/mimo/bulk-login", async (c) => {
         enabled: true,
         quotaLimit: 0,
         quotaRemaining: 0,
-      });
-
-      const created = await db.select().from(accounts)
-        .where(eq(accounts.id, Number(result.lastInsertRowid)))
-        .get();
+      }).returning();
 
       if (created) {
         loginQueue.enqueue(created.id);
@@ -1028,6 +1329,89 @@ accountsRouter.post("/:id/test", async (c) => {
         url = "https://api.xiaomimimo.com/v1/chat/completions";
         headers["Authorization"] = `Bearer ${mimoApiKey}`;
         bodyPayload = { model: testModel, messages: [{ role: "user", content: "Hi" }], max_tokens: 1 };
+        break;
+      }
+      case "alibaba": {
+        const alibabaTokens = typeof account.tokens === "string"
+          ? JSON.parse(account.tokens) as Record<string, unknown>
+          : account.tokens as Record<string, unknown> | null;
+        const skKey = String(alibabaTokens?.sk_key || "");
+        const workspaceId = String(alibabaTokens?.workspace_id || "");
+        if (!skKey || !workspaceId) {
+          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "No sk_key or workspace_id in account", latency_ms: 0 });
+        }
+        testModel = "qwen-flash";
+        url = `https://${workspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions`;
+        headers["Authorization"] = `Bearer ${skKey}`;
+        bodyPayload = { model: testModel, messages: [{ role: "user", content: "Hi" }], max_tokens: 1 };
+        break;
+      }
+      case "antigravity": {
+        const agTokens = typeof account.tokens === "string"
+          ? JSON.parse(account.tokens) as Record<string, unknown>
+          : account.tokens as Record<string, unknown> | null;
+        const refreshToken = String(agTokens?.refresh_token || "");
+        const projectId = String(agTokens?.project_id || "");
+        if (!refreshToken) {
+          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "No refresh_token in account", latency_ms: 0 });
+        }
+
+        // First refresh access token
+        try {
+          const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: refreshToken.split("|")[0] || refreshToken,
+              client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
+              client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
+            }),
+          });
+          if (!tokenRes.ok) {
+            return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: "Token refresh failed", latency_ms: 0 });
+          }
+          const tokenData = (await tokenRes.json()) as any;
+          const accessToken = tokenData.access_token;
+
+          // Resolve project_id if missing
+          let finalProjectId = projectId;
+          if (!finalProjectId && accessToken) {
+            const fetched = await fetchProjectId(accessToken);
+            if (fetched) {
+              finalProjectId = fetched;
+              const rawRefresh = refreshToken.split("|")[0] || refreshToken;
+              const updatedTokens = {
+                ...agTokens,
+                project_id: finalProjectId,
+                refresh_token: `${rawRefresh}|${finalProjectId}`,
+                access_token: accessToken,
+                access_expires_at: Date.now() + (tokenData.expires_in * 1000),
+              };
+              await db
+                .update(accounts)
+                .set({
+                  tokens: updatedTokens,
+                  updatedAt: new Date(),
+                })
+                .where(eq(accounts.id, account.id));
+              pool.invalidate("antigravity");
+            }
+          }
+
+          testModel = "gemini-3-flash";
+          url = `https://daily-cloudcode-pa.sandbox.googleapis.com/v1/projects/${finalProjectId || "default"}/locations/global/publishers/google/models/gemini-3-flash:generateContent`;
+          headers["Authorization"] = `Bearer ${accessToken}`;
+          headers["User-Agent"] = "antigravity/1.11.5 windows/amd64";
+          headers["X-Goog-Api-Client"] = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+          headers["Client-Metadata"] = '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}';
+          bodyPayload = {
+            contents: [{ role: "user", parts: [{ text: "Hi" }] }],
+            generationConfig: { maxOutputTokens: 1, temperature: 0 },
+          };
+        } catch (err) {
+          return c.json({ success: false, diagnosis: "AUTH" as Diagnosis, error: err instanceof Error ? err.message : "Token refresh error", latency_ms: 0 });
+        }
         break;
       }
       default: {

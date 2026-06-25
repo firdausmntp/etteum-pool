@@ -12,6 +12,32 @@ import { providers } from "../../src/proxy/providers/registry";
  */
 describe("getProviderForModel", () => {
   const cases: Array<[string, string]> = [
+    // antigravity (Antigravity quota)
+    ["ag/gemini-3-pro", "antigravity"],
+    ["ag/gemini-3.1-pro", "antigravity"],
+    ["ag/gemini-3-flash", "antigravity"],
+    ["ag/claude-sonnet-4-6", "antigravity"],
+    ["ag/claude-opus-4-6-thinking", "antigravity"],
+    // antigravity (Gemini CLI quota)
+    ["ag/gemini-2.5-pro", "antigravity"],
+    ["ag/gemini-2.5-flash", "antigravity"],
+    ["ag/gemini-3-flash-preview", "antigravity"],
+    ["ag/gemini-3-pro-preview", "antigravity"],
+    ["ag/gemini-3.1-pro-preview", "antigravity"],
+    ["ag/gemini-3.1-pro-preview-customtools", "antigravity"],
+    ["ag/gemini-3-pro-image", "antigravity"],
+    ["ag/claude-sonnet-4-5", "antigravity"],
+    ["ag/claude-opus-4-5", "antigravity"],
+    // alibaba
+    ["qwen-max", "alibaba"],
+    ["qwen-plus", "alibaba"],
+    ["qwen-flash", "alibaba"],
+    ["qwen-turbo", "alibaba"],
+    ["qwen-vl-max", "alibaba"],
+    ["deepseek-v3.2", "alibaba"],
+    ["glm-5.1", "alibaba"],
+    ["qvq-max", "alibaba"],
+    ["qwen-coder-plus", "alibaba"],
     // canva
     ["canva-image", "canva"],
     ["CANVA-IMAGE", "canva"],
@@ -30,7 +56,7 @@ describe("getProviderForModel", () => {
     ["cb-claude-opus-4.6", "codebuddy"],
     ["gpt-5", "codebuddy"],
     ["gpt-5.1", "codebuddy"],
-    ["gemini-2.5-pro", "codebuddy"],
+    ["gemini-2.5-pro", "antigravity"],
     ["deepseek-v3-2-volc", "codebuddy"],
     ["enowx-default", "codebuddy"],
     ["kimi-k2.5", "codebuddy"],
@@ -44,12 +70,25 @@ describe("getProviderForModel", () => {
     ["glm-5", "kiro"],
     ["glm-5-thinking", "kiro"],
     ["minimax-m2.1", "kiro"],
-    ["qwen3-coder-next", "kiro"],
+    ["qwen3-coder-next", "alibaba"],
     // claude fallback → kiro
     ["claude-opus-4.1", "kiro"],
     ["some-unknown-sonnet-model", "kiro"],
     // unknown default → kiro
     ["totally-unknown-model", "kiro"],
+
+    // slash-prefixed equivalents
+    ["qd/Lite", "qoder"],
+    ["qd/Qwen3.7-Max", "qoder"],
+    ["cx/mini", "codex"],
+    ["cx/gpt-5.5-xhigh", "codex"],
+    ["kp/opus-4.8", "kiro-pro"],
+    ["kp/sonnet-4.6-thinking", "kiro-pro"],
+    ["cb/claude-opus-4.6", "codebuddy"],
+    ["mm/mimo-v2.5", "mimo"],
+    ["cv/image", "canva"],
+    ["kr/auto", "kiro"],
+    ["ali/qwen3.7-max", "alibaba"],
   ];
 
   for (const [model, expected] of cases) {

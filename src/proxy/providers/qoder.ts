@@ -727,7 +727,8 @@ export class QoderProvider extends BaseProvider {
   name = "qoder";
 
   override ownsModel(model: string): boolean {
-    return model.toLowerCase().startsWith("qd-");
+    const m = model.toLowerCase();
+    return m.startsWith("qd-") || m.startsWith("qd/");
   }
 
   supportedModels: ModelInfo[] = QODER_MODELS.map((m) => ({

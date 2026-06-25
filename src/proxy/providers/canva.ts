@@ -63,7 +63,8 @@ export class CanvaProvider extends BaseProvider {
   name = "canva";
 
   override ownsModel(model: string): boolean {
-    return model.toLowerCase().includes("canva");
+    const m = model.toLowerCase();
+    return m.startsWith("cv/") || m.includes("canva");
   }
 
   supportedModels: ModelInfo[] = [

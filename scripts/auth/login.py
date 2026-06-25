@@ -17,6 +17,7 @@ from app.providers.yepapi import YepAPIAdapter
 from app.providers.mimo import MimoAdapter
 from app.providers.codex import CodexProviderAdapter
 from app.providers.qoder import QoderProviderAdapter
+from app.providers.antigravity import AntigravityProviderAdapter
 from app.providers.base import NormalizedAccount
 from app.errors.codes import ErrorCode
 from app.errors.exceptions import BatcherError, RetryableBatcherError
@@ -403,6 +404,12 @@ async def main(email: str, password: str):
                 MimoAdapter(),
                 NormalizedAccount(provider="mimo", identifier=email, secret=password),
             ),
+            "antigravity": (
+                AntigravityProviderAdapter(),
+                NormalizedAccount(
+                    provider="antigravity", identifier=email, secret=password
+                ),
+            ),
         }
         tasks = []
         task_names = []
@@ -414,6 +421,7 @@ async def main(email: str, password: str):
             "codex",
             "qoder",
             "mimo",
+            "antigravity",
         ]:
             if name in allowed_providers:
                 adapter, account = provider_specs[name]
@@ -459,6 +467,9 @@ async def main(email: str, password: str):
     )
 
     mimo_account = NormalizedAccount(provider="mimo", identifier=email, secret=password)
+    antigravity_account = NormalizedAccount(
+        provider="antigravity", identifier=email, secret=password
+    )
 
     kiro_adapter = KiroProviderAdapter()
     cb_adapter = CodeBuddyProviderAdapter()
@@ -467,12 +478,18 @@ async def main(email: str, password: str):
     yep_adapter = YepAPIAdapter()
 
     mimo_adapter = MimoAdapter()
+    antigravity_adapter = AntigravityProviderAdapter()
 
     ws_skipped = {"success": False, "provider": "wavespeed", "error": "skipped"}
     canva_skipped = {"success": False, "provider": "canva", "error": "skipped"}
     yep_skipped = {"success": False, "provider": "yepapi", "error": "skipped"}
 
     mimo_skipped = {"success": False, "provider": "mimo", "error": "skipped"}
+    antigravity_skipped = {
+        "success": False,
+        "provider": "antigravity",
+        "error": "skipped",
+    }
 
     kiro_skipped = {"success": False, "provider": "kiro", "error": "skipped"}
     cb_skipped = {"success": False, "provider": "codebuddy", "error": "skipped"}
@@ -601,8 +618,10 @@ async def main(email: str, password: str):
 
     run_yepapi = concurrent >= 5
     run_mimo = concurrent >= 7
+    run_antigravity = concurrent >= 1
     yep_result = yep_skipped
     mimo_result = mimo_skipped
+    antigravity_result = antigravity_skipped
 
     tasks = [
         run_provider(kiro_adapter, kiro_account),
@@ -615,6 +634,8 @@ async def main(email: str, password: str):
         tasks.append(run_provider(yep_adapter, yep_account))
     if run_mimo:
         tasks.append(run_provider(mimo_adapter, mimo_account))
+    if run_antigravity:
+        tasks.append(run_provider(antigravity_adapter, antigravity_account))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -630,6 +651,9 @@ async def main(email: str, password: str):
         idx += 1
     if run_mimo and idx < len(results):
         mimo_result = results[idx]
+        idx += 1
+    if run_antigravity and idx < len(results):
+        antigravity_result = results[idx]
 
     if isinstance(kiro_result, BaseException):
         kiro_result = {"success": False, "provider": "kiro", "error": str(kiro_result)}
@@ -653,6 +677,13 @@ async def main(email: str, password: str):
             "error": str(mimo_result),
         }
 
+    if isinstance(antigravity_result, BaseException):
+        antigravity_result = {
+            "success": False,
+            "provider": "antigravity",
+            "error": str(antigravity_result),
+        }
+
     result = {
         "type": "result",
         "kiro": kiro_result,
@@ -661,6 +692,7 @@ async def main(email: str, password: str):
         "canva": canva_result,
         "yepapi": yep_result,
         "mimo": mimo_result,
+        "antigravity": antigravity_result,
     }
     emit(result)
 

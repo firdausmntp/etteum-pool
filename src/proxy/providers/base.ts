@@ -199,7 +199,30 @@ export abstract class BaseProvider {
 
   getModelInfo(model: string): ModelInfo | undefined {
     const normalized = model.toLowerCase();
-    return this.supportedModels.find((item) => item.id.toLowerCase() === normalized);
+    
+    // 1. Try exact match
+    let match = this.supportedModels.find((item) => item.id.toLowerCase() === normalized);
+    if (match) return match;
+
+    // 2. Try stripping slash prefix (e.g. "kp/opus-4.8" -> "opus-4.8")
+    const clean = model.includes("/") ? model.split("/")[1] || model : model;
+    const cleanLower = clean.toLowerCase();
+    match = this.supportedModels.find((item) => item.id.toLowerCase() === cleanLower);
+    if (match) return match;
+
+    // 3. Try mapping suffix to dashed prefixes (kp-, qd-, cb-, codex-)
+    const mappedCandidates = [
+      `kp-${cleanLower}`,
+      `qd-${cleanLower}`,
+      `cb-${cleanLower}`,
+      `codex-${cleanLower}`,
+    ];
+    for (const cand of mappedCandidates) {
+      match = this.supportedModels.find((item) => item.id.toLowerCase() === cand);
+      if (match) return match;
+    }
+
+    return undefined;
   }
 
   getProviderCreditRate(model: string): number {

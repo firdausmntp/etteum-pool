@@ -214,6 +214,6 @@ export function resolveDefaultModel(info: ProxyConnectionInfo): string {
     models.find((m) => m.id.toLowerCase().includes("sonnet-4"))?.id ||
     models.find((m) => m.id.toLowerCase().includes("sonnet"))?.id ||
     models[0]?.id ||
-    "kp-sonnet-4.6"
+    "kp/sonnet-4.6"
   );
 }

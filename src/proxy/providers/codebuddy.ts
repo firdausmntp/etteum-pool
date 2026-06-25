@@ -103,7 +103,8 @@ export class CodeBuddyProvider extends BaseProvider {
   private static readonly SCHEMA_CACHE_MAX = 200;
 
   override ownsModel(model: string): boolean {
-    return model.toLowerCase().startsWith("cb-");
+    const m = model.toLowerCase();
+    return m.startsWith("cb-") || m.startsWith("cb/");
   }
 
   /** Resolve cb- prefixed model IDs to actual CodeBuddy API model names. */

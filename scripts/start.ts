@@ -176,8 +176,10 @@ ${"\x1b[36m"} |_____|\\__|\\__\\___|\\__,_|_| |_| |_| ${"\x1b[0m"}
 
 // 1. Backend with hot-reload — module re-evaluation in-process.
 //    Crucially, this preserves WS connections, BYOK cache, login queue, etc.
+//    Note: --hot is disabled on Windows due to instability (exit code 255).
+const backendArgs = process.platform === "win32" ? ["src/index.ts"] : ["--hot", "src/index.ts"];
 children.push(
-  spawnLogged("backend", [bunExe, "--hot", "src/index.ts"], root, {
+  spawnLogged("backend", [bunExe, ...backendArgs], root, {
     NODE_ENV: "development",
     SUPPRESS_BANNER: "1",
   }),

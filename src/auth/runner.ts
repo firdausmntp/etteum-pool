@@ -762,7 +762,7 @@ export async function loginAllProviders(
         stderr: "pipe",
         env: {
           ...process.env,
-          ENOWX_ALLOWED_PROVIDERS: "kiro,kiro-pro,codebuddy,canva,codex,mimo",
+          ENOWX_ALLOWED_PROVIDERS: "kiro,kiro-pro,codebuddy,canva,codex,mimo,antigravity",
           BATCHER_ENABLE_CAMOUFOX: "true",
           BATCHER_CAMOUFOX_HEADLESS: config.headless ? "true" : "false",
           BATCHER_PROXY_URL: proxyUrlForAuth || config.proxyUrl || "",
@@ -792,12 +792,14 @@ export async function loginAllProviders(
         codebuddy: { success: false, error },
         canva: { success: false, error },
         codex: { success: false, error },
+        mimo: { success: false, error },
+        antigravity: { success: false, error },
       };
     }
 
     const output: Record<string, LoginResult> = {};
 
-    for (const provider of ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "mimo"] as const) {
+    for (const provider of ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "mimo", "antigravity"] as const) {
       const pr = result[provider] as ProviderResult | undefined;
       if (!pr || !pr.success) {
         output[provider] = {
@@ -823,6 +825,7 @@ export async function loginAllProviders(
       canva: { success: false, error: errorMsg },
       codex: { success: false, error: errorMsg },
       mimo: { success: false, error: errorMsg },
+      antigravity: { success: false, error: errorMsg },
     };
   }
 }

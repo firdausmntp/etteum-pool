@@ -110,8 +110,10 @@ export class KiroProvider extends BaseProvider {
   }
 
   override ownsModel(model: string): boolean {
-    if (this.variant === "pro") return model.toLowerCase().startsWith("kp-");
-    const m = model.toLowerCase().replace("-thinking", "");
+    const lower = model.toLowerCase();
+    if (this.variant === "pro") return lower.startsWith("kp-") || lower.startsWith("kp/");
+    if (lower.startsWith("kr/")) return true;
+    const m = lower.replace("-thinking", "");
     if (this.getModelInfo(model)) return true;
     if (m === "auto") return true;
     if (m === "deepseek-3.2" || m === "glm-5") return true;

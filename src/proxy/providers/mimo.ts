@@ -31,7 +31,8 @@ export class MimoProvider extends BaseProvider {
   override nativeFormat: "openai" | "anthropic" = "openai";
 
   override ownsModel(model: string): boolean {
-    return this.supportedModels.some((m) => m.id === model);
+    const m = model.toLowerCase();
+    return m.startsWith("mm/") || this.supportedModels.some((item) => item.id === model);
   }
 
   supportedModels: ModelInfo[] = [

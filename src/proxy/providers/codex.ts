@@ -51,7 +51,7 @@ export class CodexProvider extends BaseProvider {
 
   override ownsModel(model: string): boolean {
     const m = model.toLowerCase();
-    return m.startsWith("codex-") || m === "gpt-5-codex" || m === "gpt-5.5-xhigh";
+    return m.startsWith("cx/") || m.startsWith("codex-") || m === "gpt-5-codex" || m === "gpt-5.5-xhigh";
   }
 
   supportedModels: ModelInfo[] = [

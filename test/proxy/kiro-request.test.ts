@@ -28,7 +28,7 @@ describe("kiro nativeFormat + routing flags", () => {
     for (const m of ["auto", "claude-sonnet-4.5", "claude-sonnet-4.5-thinking", "deepseek-3.2", "glm-5", "minimax-m2.1", "qwen3-coder-next", "claude-opus-4.1"]) {
       expect(kiro.ownsModel(m)).toBe(true);
     }
-    for (const m of ["qd-Lite", "kp-opus-4.8", "cb-opus-4.6", "codex-auto", "canva-image"]) {
+    for (const m of ["qd-Lite", "qd/Lite", "kp-opus-4.8", "kp/opus-4.8", "cb-opus-4.6", "cb/opus-4.6", "codex-auto", "cx/auto", "canva-image", "cv/image"]) {
       expect(kiro.ownsModel(m)).toBe(false);
     }
   });

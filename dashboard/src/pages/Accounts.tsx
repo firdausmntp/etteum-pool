@@ -49,7 +49,7 @@ import {
 import { cn } from "@/lib/utils";
 import { JoinTeamModal } from "@/components/canva/JoinTeamModal";
 
-type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo";
+type Provider = "kiro" | "kiro-pro" | "codebuddy" | "canva" | "codex" | "qoder" | "mimo" | "alibaba" | "antigravity";
 
 interface Account {
   id: number;
@@ -60,7 +60,7 @@ interface Account {
   quotaRemaining?: number;
 }
 
-const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "mimo"];
+const providers: Provider[] = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "mimo", "alibaba", "antigravity"];
 
 function labelProvider(provider: string) {
   if (provider === "kiro-pro") return "Kiro Pro";
@@ -68,6 +68,8 @@ function labelProvider(provider: string) {
   if (provider === "codex") return "Codex";
   if (provider === "qoder") return "Qoder";
   if (provider === "mimo") return "MiMo";
+  if (provider === "alibaba") return "Alibaba";
+  if (provider === "antigravity") return "Antigravity";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
@@ -122,6 +124,18 @@ export default function Accounts() {
   const [mimoBulkResults, setMimoBulkResults] = useState<Array<{ email: string; success: boolean; id?: number; error?: string }> | null>(null);
   const [mimoBulkReferralCode, setMimoBulkReferralCode] = useState("M8C7QK");
   const [mimoConcurrency, setMimoConcurrency] = useState(2);
+
+  // Alibaba provider state
+  const [alibabaForm, setAlibabaForm] = useState({ email: "", sk_key: "", workspace_id: "" });
+  const [alibabaMode, setAlibabaMode] = useState<"single" | "bulk">("single");
+  const [alibabaBulkText, setAlibabaBulkText] = useState("");
+  const [alibabaBulkResults, setAlibabaBulkResults] = useState<Array<{ email: string; success: boolean; id?: number; error?: string }> | null>(null);
+
+  // Antigravity provider state
+  const [antigravityForm, setAntigravityForm] = useState({ email: "", refresh_token: "", project_id: "" });
+  const [antigravityMode, setAntigravityMode] = useState<"single" | "bulk">("single");
+  const [antigravityBulkText, setAntigravityBulkText] = useState("");
+  const [antigravityBulkResults, setAntigravityBulkResults] = useState<Array<{ email: string; success: boolean; id?: number; error?: string }> | null>(null);
 
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codexOauthPopupRef = useRef<Window | null>(null);
@@ -666,6 +680,120 @@ export default function Accounts() {
       setMimoConcurrency(2);
       await load();
     } catch (err) { showError(err); }
+  }
+
+  async function handleAddAlibaba() {
+    // Auto-parse pipe-separated format: email|sk_key|workspace_id
+    if (alibabaForm.email.includes("|")) {
+      const parts = alibabaForm.email.split("|");
+      if (parts.length >= 3) {
+        setAlibabaForm({ email: parts[0].trim(), sk_key: parts[1].trim(), workspace_id: parts[2].trim() });
+        return; // Re-render with parsed values, user clicks Add again
+      }
+    }
+    if (!alibabaForm.email.trim() || !alibabaForm.sk_key.trim() || !alibabaForm.workspace_id.trim()) {
+      showError(new Error("Email, SK Key, and Workspace ID are required"));
+      return;
+    }
+    try {
+      const data = await fetchApi<{ success: boolean; id: number }>("/api/accounts/alibaba", {
+        method: "POST",
+        body: JSON.stringify({
+          email: alibabaForm.email.trim(),
+          sk_key: alibabaForm.sk_key.trim(),
+          workspace_id: alibabaForm.workspace_id.trim(),
+        }),
+      });
+      showSuccess("Alibaba account added successfully");
+      setAlibabaForm({ email: "", sk_key: "", workspace_id: "" });
+      setAddDialogProvider(null);
+      await load();
+    } catch (err) { showError(err); }
+  }
+
+  async function handleAlibabaBulk() {
+    const lines = alibabaBulkText.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) { showError(new Error("Paste at least one line")); return; }
+    const results: Array<{ email: string; success: boolean; id?: number; error?: string }> = [];
+    for (const line of lines) {
+      const parts = line.split("|");
+      if (parts.length < 3) {
+        results.push({ email: line, success: false, error: "Expected email|sk_key|workspace_id" });
+        continue;
+      }
+      try {
+        const data = await fetchApi<{ success: boolean; id: number }>("/api/accounts/alibaba", {
+          method: "POST",
+          body: JSON.stringify({ email: parts[0].trim(), sk_key: parts[1].trim(), workspace_id: parts[2].trim() }),
+        });
+        results.push({ email: parts[0].trim(), success: true, id: data.id });
+      } catch (err: any) {
+        results.push({ email: parts[0].trim(), success: false, error: err.message });
+      }
+    }
+    setAlibabaBulkResults(results);
+    showSuccess(`Alibaba: ${results.filter((r) => r.success).length}/${results.length} accounts added`);
+    setAlibabaBulkText("");
+    await load();
+  }
+
+  async function handleAddAntigravity() {
+    if (!antigravityForm.email.trim() || !antigravityForm.refresh_token.trim()) {
+      showError(new Error("Email and refresh token are required"));
+      return;
+    }
+    try {
+      const data = await fetchApi<{ success: boolean; id: number }>("/api/accounts/antigravity", {
+        method: "POST",
+        body: JSON.stringify({
+          email: antigravityForm.email.trim(),
+          refresh_token: antigravityForm.refresh_token.trim(),
+          project_id: antigravityForm.project_id.trim() || undefined,
+        }),
+      });
+      showSuccess("Antigravity account added successfully");
+      setAntigravityForm({ email: "", refresh_token: "", project_id: "" });
+      setAddDialogProvider(null);
+      await load();
+    } catch (err) { showError(err); }
+  }
+
+  async function handleAntigravityBulk() {
+    const lines = antigravityBulkText.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) { showError(new Error("Paste at least one line")); return; }
+    const results: Array<{ email: string; success: boolean; id?: number; error?: string }> = [];
+    for (const line of lines) {
+      // Support both "|" and ":" as separators — try "|" first, fall back to ":"
+      let parts = line.includes("|") ? line.split("|") : line.split(":");
+      if (parts.length < 2) {
+        results.push({ email: line, success: false, error: "Expected email:password OR email|refresh_token|project_id" });
+        continue;
+      }
+      const email = parts[0].trim();
+      const credential = parts[1].trim();
+      const project_id = parts[2]?.trim() || undefined;
+
+      // Detect mode: credential is a password if it doesn't start with "1//" and has no "."
+      const isRefreshToken = credential.startsWith("1//") || credential.includes(".");
+
+      try {
+        const body = isRefreshToken
+          ? { email, refresh_token: credential, project_id }
+          : { email, password: credential };
+
+        const data = await fetchApi<{ success: boolean; id: number }>("/api/accounts/antigravity", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        results.push({ email, success: true, id: data.id });
+      } catch (err: any) {
+        results.push({ email, success: false, error: err.message });
+      }
+    }
+    setAntigravityBulkResults(results);
+    showSuccess(`Antigravity: ${results.filter((r) => r.success).length}/${results.length} accounts added`);
+    setAntigravityBulkText("");
+    await load();
   }
 
   async function handleAddByok() {
@@ -1219,15 +1347,16 @@ export default function Accounts() {
                         </div>
                       </div>
                     </TooltipProvider>
-                  </div>
-                )}
+            </div>
+          )}
+
               </Card>
             ))}
                 </div>
               </div>
             ))}
-          </div>
-        )}
+            </div>
+          )}
       </div>
 
       {/* BYOK Add/Edit Dialog */}
@@ -1424,7 +1553,7 @@ export default function Accounts() {
                 className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${addMode === "single" ? "bg-[var(--background)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
               >Single</button>
             </div>
-          ) : addDialogProvider !== "mimo" ? (
+          ) : addDialogProvider !== "mimo" && addDialogProvider !== "alibaba" && addDialogProvider !== "antigravity" ? (
             <div className="flex gap-1 rounded-md bg-[var(--secondary)] p-1">
               <button onClick={() => setAddMode("bulk")}
                 className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${addMode === "bulk" ? "bg-[var(--background)] text-[var(--foreground)] shadow-sm" : "text-[var(--muted-foreground)]"}`}
@@ -1538,8 +1667,8 @@ export default function Accounts() {
             </div>
           )}
 
-          {/* Bulk mode (all providers) */}
-          {addMode === "bulk" && addDialogProvider !== "mimo" && (
+          {/* Bulk mode (all providers except those with custom forms) */}
+          {addMode === "bulk" && addDialogProvider !== "mimo" && addDialogProvider !== "alibaba" && addDialogProvider !== "antigravity" && (
             <div className="space-y-4">
               {/* Results view — shown after import completes */}
               {importResults !== null ? (
@@ -1775,6 +1904,245 @@ export default function Accounts() {
                     </>
                   )}
                 </>
+              )}
+            </div>
+          )}
+
+          {/* Alibaba: SK Key + Workspace ID */}
+          {addDialogProvider === "alibaba" && (
+            <div className="space-y-4">
+              {/* Mode toggle */}
+              <div className="flex rounded-md border border-[var(--border)] overflow-hidden text-sm">
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", alibabaMode === "single" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => setAlibabaMode("single")}
+                >
+                  Single Add
+                </button>
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", alibabaMode === "bulk" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => setAlibabaMode("bulk")}
+                >
+                  Bulk Add
+                </button>
+              </div>
+
+              {/* Single add form */}
+              {alibabaMode === "single" && (
+                <>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Email</label>
+                    <Input
+                      className="mt-1"
+                      placeholder="email or paste: email|sk_key|workspace_id"
+                      value={alibabaForm.email}
+                      onChange={(e) => setAlibabaForm({ ...alibabaForm, email: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Paste full format: email|sk_key|workspace_id or fill separately</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">SK Key</label>
+                    <Input
+                      className="mt-1"
+                      type="password"
+                      placeholder="sk-ws-H.XXXX.XXXX.XXXX..."
+                      value={alibabaForm.sk_key}
+                      onChange={(e) => setAlibabaForm({ ...alibabaForm, sk_key: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">SK key dari file sk_keys.txt atau dashboard Alibaba.</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Workspace ID</label>
+                    <Input
+                      className="mt-1"
+                      placeholder="ws-xxxxxxxxxxxxxx"
+                      value={alibabaForm.workspace_id}
+                      onChange={(e) => setAlibabaForm({ ...alibabaForm, workspace_id: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Workspace ID dari URL: https://{'{workspace-id}'}.ap-southeast-1.maas.aliyuncs.com</p>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setAddDialogProvider(null)}>Cancel</Button>
+                    <Button onClick={handleAddAlibaba}>Add Account</Button>
+                  </div>
+                </>
+              )}
+
+              {/* Bulk add form */}
+              {alibabaMode === "bulk" && alibabaBulkResults === null && (
+                <>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Accounts (email|sk_key|workspace_id per baris)</label>
+                    <textarea
+                      value={alibabaBulkText}
+                      onChange={(e) => setAlibabaBulkText(e.target.value)}
+                      className="mt-1 w-full h-40 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
+                      placeholder={'you@example.com|sk-ws-H.XXX.XXX.XXX|ws-xxxxxxx'}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Format: email|sk_key|workspace_id per baris.</p>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => { setAlibabaMode("single"); setAlibabaBulkResults(null); setAlibabaBulkText(""); }}>Cancel</Button>
+                    <Button onClick={handleAlibabaBulk}>Add Accounts</Button>
+                  </div>
+                </>
+              )}
+
+              {/* Bulk results view */}
+              {alibabaMode === "bulk" && alibabaBulkResults !== null && alibabaBulkResults.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-[var(--foreground)]">
+                      Import Results ({alibabaBulkResults.filter((r) => r.success).length}/{alibabaBulkResults.length} added)
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {alibabaBulkResults.map((r, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${
+                          r.success
+                            ? "bg-[var(--success)]/10 text-[var(--success)]"
+                            : "bg-[var(--error)]/10 text-[var(--error)]"
+                        }`}
+                      >
+                        <span className="font-medium">{r.success ? "✓" : "✗"}</span>
+                        <span className="font-mono truncate">{r.email}</span>
+                        {!r.success && r.error && (
+                          <span className="ml-auto shrink-0 opacity-80">— {r.error}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-end gap-2 mt-3">
+                    <Button
+                      variant="outline"
+                      onClick={() => { setAlibabaBulkResults(null); setAlibabaBulkText(""); setAddDialogProvider(null); }}
+                    >
+                      Close
+                    </Button>
+                    <Button onClick={() => navigate("/bot-logs")}>View Logs</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Antigravity: Google OAuth Refresh Token */}
+          {addDialogProvider === "antigravity" && (
+            <div className="space-y-4">
+              {/* Mode toggle */}
+              <div className="flex rounded-md border border-[var(--border)] overflow-hidden text-sm">
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", antigravityMode === "single" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => setAntigravityMode("single")}
+                >
+                  Single Add
+                </button>
+                <button
+                  className={cn("flex-1 py-1.5 px-3 transition-colors", antigravityMode === "bulk" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "bg-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]")}
+                  onClick={() => setAntigravityMode("bulk")}
+                >
+                  Bulk Add
+                </button>
+              </div>
+
+              {/* Single add form */}
+              {antigravityMode === "single" && (
+                <>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Email</label>
+                    <Input
+                      className="mt-1"
+                      placeholder="you@gmail.com"
+                      value={antigravityForm.email}
+                      onChange={(e) => setAntigravityForm({ ...antigravityForm, email: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Refresh Token</label>
+                    <Input
+                      className="mt-1"
+                      type="password"
+                      placeholder="1//0xxxxxxxxx..."
+                      value={antigravityForm.refresh_token}
+                      onChange={(e) => setAntigravityForm({ ...antigravityForm, refresh_token: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Google OAuth refresh token dari antigravity auth.</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Project ID <span className="text-[var(--muted-foreground)]">(opsional)</span></label>
+                    <Input
+                      className="mt-1"
+                      placeholder="my-google-cloud-project"
+                      value={antigravityForm.project_id}
+                      onChange={(e) => setAntigravityForm({ ...antigravityForm, project_id: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Google Cloud Project ID. Kosongkan jika tidak yakin.</p>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setAddDialogProvider(null)}>Cancel</Button>
+                    <Button onClick={handleAddAntigravity}>Add Account</Button>
+                  </div>
+                </>
+              )}
+
+              {/* Bulk add form */}
+              {antigravityMode === "bulk" && antigravityBulkResults === null && (
+                <>
+                  <div>
+                    <label className="text-sm text-[var(--foreground)]">Accounts (satu per baris)</label>
+                    <textarea
+                      value={antigravityBulkText}
+                      onChange={(e) => setAntigravityBulkText(e.target.value)}
+                      className="mt-1 w-full h-40 rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-sm font-mono text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] resize-none"
+                      placeholder={"email:password  OR  email|refresh_token|project_id"}
+                    />
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">Format: email:password (untuk auto-login) atau email|refresh_token|project_id (token langsung)</p>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => { setAntigravityMode("single"); setAntigravityBulkResults(null); setAntigravityBulkText(""); }}>Cancel</Button>
+                    <Button onClick={handleAntigravityBulk}>Add Accounts</Button>
+                  </div>
+                </>
+              )}
+
+              {/* Bulk results view */}
+              {antigravityBulkResults !== null && antigravityBulkResults.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-[var(--foreground)]">
+                      Import Results ({antigravityBulkResults.filter((r) => r.success).length}/{antigravityBulkResults.length} added)
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {antigravityBulkResults.map((r, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${
+                          r.success
+                            ? "bg-[var(--success)]/10 text-[var(--success)]"
+                            : "bg-[var(--error)]/10 text-[var(--error)]"
+                        }`}
+                      >
+                        <span className="font-medium">{r.success ? "✓" : "✗"}</span>
+                        <span className="font-mono truncate">{r.email}</span>
+                        {!r.success && r.error && (
+                          <span className="ml-auto shrink-0 opacity-80">— {r.error}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex justify-end gap-2 mt-3">
+                    <Button
+                      variant="outline"
+                      onClick={() => { setAntigravityBulkResults(null); setAntigravityBulkText(""); setAddDialogProvider(null); }}
+                    >
+                      Close
+                    </Button>
+                    <Button onClick={() => navigate("/bot-logs")}>View Logs</Button>
+                  </div>
+                </div>
               )}
             </div>
           )}

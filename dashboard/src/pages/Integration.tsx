@@ -34,7 +34,7 @@ import { useTimedMessage } from "@/hooks/useTimedMessage";
 import { useWsEvent } from "@/hooks/useWebSocket";
 import { ClientCard } from "@/components/integration/ClientCard";
 
-// Claude Code only ever calls these three model classes.
+// the assistant only ever calls these three model classes.
 const CLAUDE_CODE_SLOTS = [
   { source: "haiku", title: "Haiku", desc: "small / fast / background tasks" },
   { source: "sonnet", title: "Sonnet", desc: "main coding model" },
@@ -53,9 +53,6 @@ function ModelCombobox({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const ref = useState<HTMLDivElement | null>(null)[0]
-    ? null
-    : null;
 
   // Simple implementation using useEffect for click-outside
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
@@ -188,10 +185,16 @@ export default function Integration() {
   const [models, setModels] = useState<
     { id: string; owned_by: string }[]
   >([]);
+  // Fix #7: loading state for API key
   const [apiKey, setApiKey] = useState("");
+  const [loadingApiKey, setLoadingApiKey] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loadingClients, setLoadingClients] = useState(true);
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  // Fix #1: applyAll state
+  const [applyingAll, setApplyingAll] = useState(false);
+  const { message: applyAllResult, setMessage: setApplyAllResult } = useTimedMessage<string>(null, 4000);
   const [clients, setClients] = useState<ClientMetaDTO[]>([]);
   const [integrationModels, setIntegrationModels] = useState<
     IntegrationModelDTO[]
@@ -200,19 +203,20 @@ export default function Integration() {
   const { message, setMessage } = useTimedMessage<string>(null, 3000);
 
   const baseUrl = API_BASE;
-  const defaultModel = "kp-sonnet-4.6";
+  const defaultModel = "kp/sonnet-4.6";
 
   // Per-client model selection
   const [clientModels, setClientModels] = useState<Record<string, string>>({
-    opencode: "kp-sonnet-4.6",
-    codex: "codex-auto",
-    hermes: "kp-sonnet-4.6",
-    openclaw: "kp-sonnet-4.6",
-    kilo: "kp-sonnet-4.6",
+    opencode: "kp/sonnet-4.6",
+    codex: "cx/auto",
+    hermes: "kp/sonnet-4.6",
+    openclaw: "kp/sonnet-4.6",
+    kilo: "kp/sonnet-4.6",
   });
 
   const load = useCallback(async () => {
     try {
+      setLoadingApiKey(true);
       const [data, keyRes] = await Promise.all([
         fetchIntegration(),
         fetchApiKey().catch(() => null),
@@ -229,20 +233,24 @@ export default function Integration() {
       }
       setTargets(next);
       if (keyRes?.key) setApiKey(keyRes.key);
-    } catch (e: any) {
-      setMessage(e.message || "Failed to load integration settings");
+    } catch (e: unknown) {
+      setMessage((e instanceof Error ? e.message : null) || "Failed to load integration settings");
     } finally {
       setLoading(false);
+      setLoadingApiKey(false);
     }
   }, [setMessage]);
 
   const loadClients = useCallback(async () => {
+    setLoadingClients(true);
     try {
       const data = await fetchIntegrationClients();
       setClients(data.clients || []);
       setIntegrationModels(data.models || []);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("Failed to load clients:", e);
+    } finally {
+      setLoadingClients(false);
     }
   }, []);
 
@@ -261,12 +269,12 @@ export default function Integration() {
         targetModel: targets[slot.source] || "",
         enabled: Boolean(targets[slot.source]),
         priority: i,
-        label: `Claude Code · ${slot.title}`,
+        label: `the assistant · ${slot.title}`,
       }));
       await saveIntegration({ enabled, mappings });
       setMessage("Saved");
-    } catch (e: any) {
-      setMessage(e.message || "Save failed");
+    } catch (e: unknown) {
+      setMessage((e instanceof Error ? e.message : null) || "Save failed");
     } finally {
       setSaving(false);
     }
@@ -277,10 +285,24 @@ export default function Integration() {
     try {
       await applyIntegrationConfig(baseUrl);
       setMessage("Applied configuration to ~/.claude/settings.json");
-    } catch (e: any) {
-      setMessage(e.message || "Failed to apply configuration");
+    } catch (e: unknown) {
+      setMessage((e instanceof Error ? e.message : null) || "Failed to apply configuration");
     } finally {
       setApplying(false);
+    }
+  };
+
+  // Fix #1: apply all clients handler
+  const handleApplyAll = async () => {
+    setApplyingAll(true);
+    try {
+      await applyAllClients(baseUrl);
+      setApplyAllResult("Applied all detected clients successfully");
+      await loadClients();
+    } catch (e: unknown) {
+      setApplyAllResult((e instanceof Error ? e.message : null) || "Failed to apply all clients");
+    } finally {
+      setApplyingAll(false);
     }
   };
 
@@ -294,6 +316,48 @@ export default function Integration() {
     await loadClients();
   };
 
+  // Fix #2: helper for tab content with loading/empty state
+  function ClientTabContent({ clientId, model, onModelChange, showPreview }: {
+    clientId: string;
+    model: string;
+    onModelChange: (m: string) => void;
+    showPreview?: boolean;
+  }) {
+    if (loadingClients) {
+      return (
+        <div className="flex items-center gap-2 py-8 text-sm text-[var(--muted-foreground)]">
+          <RefreshCw className="w-4 h-4 animate-spin" /> Loading...
+        </div>
+      );
+    }
+    const matched = clients.filter((c) => c.id === clientId);
+    if (matched.length === 0) {
+      return (
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Client not detected on this machine.
+        </p>
+      );
+    }
+    return (
+      <>
+        {matched.map((c) => (
+          <ClientCard
+            key={c.id}
+            client={c}
+            baseUrl={baseUrl}
+            apiKey={loadingApiKey ? "" : apiKey}
+            model={model}
+            models={integrationModels}
+            showPreview={showPreview}
+            onModelChange={onModelChange}
+            onApply={handleApplyClient}
+            onRestore={handleRestoreClient}
+          />
+        ))}
+      </>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -305,8 +369,30 @@ export default function Integration() {
             Connect AI coding tools to your proxy pool
           </p>
         </div>
-        <div className="flex items-center gap-2" />
+        {/* Fix #1: Apply All Detected button */}
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleApplyAll}
+            disabled={applyingAll}
+            variant="outline"
+            className="gap-2"
+          >
+            {applyingAll ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Zap className="w-4 h-4" />
+            )}
+            Apply All Detected
+          </Button>
+        </div>
       </div>
+
+      {/* Fix #1: toast for applyAll result */}
+      {applyAllResult && (
+        <div className="px-4 py-2 rounded-md bg-[var(--secondary)] text-sm text-[var(--foreground)]">
+          {applyAllResult}
+        </div>
+      )}
 
       {message && (
         <div className="px-4 py-2 rounded-md bg-[var(--secondary)] text-sm text-[var(--foreground)]">
@@ -345,12 +431,12 @@ export default function Integration() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <Terminal className="w-4 h-4" /> Claude Code Setup
+                <Terminal className="w-4 h-4" /> the assistant Setup
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-[var(--muted-foreground)]">
-                Point Claude Code at this proxy. Sets{" "}
+                Point the assistant at this proxy. Sets{" "}
                 <code className="text-xs bg-[var(--secondary)] px-1 py-0.5 rounded">
                   ANTHROPIC_BASE_URL
                 </code>{" "}
@@ -366,7 +452,19 @@ export default function Integration() {
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <CodeRow label="ANTHROPIC_BASE_URL" value={baseUrl} />
-                <CodeRow label="ANTHROPIC_AUTH_TOKEN" value={apiKey || "<YOUR_API_KEY>"} />
+                {/* Fix #7: grey placeholder while loading */}
+                {loadingApiKey ? (
+                  <div>
+                    <label className="text-xs font-medium text-[var(--muted-foreground)] mb-1 block">
+                      ANTHROPIC_AUTH_TOKEN
+                    </label>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--background)]">
+                      <span className="flex-1 h-4 rounded bg-[var(--secondary)] animate-pulse" />
+                    </div>
+                  </div>
+                ) : (
+                  <CodeRow label="ANTHROPIC_AUTH_TOKEN" value={apiKey || "<YOUR_API_KEY>"} />
+                )}
               </div>
               <Button onClick={handleApplyConfig} disabled={applying} className="gap-2">
                 {applying ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
@@ -421,57 +519,54 @@ export default function Integration() {
 
         {/* ── OpenCode Tab ────────────────────────────────────── */}
         <TabsContent value="opencode" className="space-y-6">
-          {clients.filter((c) => c.id === "opencode").map((c) => (
-            <ClientCard key={c.id} client={c} baseUrl={baseUrl} apiKey={apiKey}
-              model={clientModels.opencode || defaultModel} models={integrationModels}
-              showPreview
-              onModelChange={(m) => setClientModels((p) => ({ ...p, opencode: m }))}
-              onApply={handleApplyClient} onRestore={handleRestoreClient} />
-          ))}
+          <ClientTabContent
+            clientId="opencode"
+            model={clientModels.opencode || defaultModel}
+            onModelChange={(m) => setClientModels((p) => ({ ...p, opencode: m }))}
+            showPreview
+          />
         </TabsContent>
 
         {/* ── Codex Tab ───────────────────────────────────────── */}
         <TabsContent value="codex" className="space-y-6">
-          {clients.filter((c) => c.id === "codex").map((c) => (
-            <ClientCard key={c.id} client={c} baseUrl={baseUrl} apiKey={apiKey}
-              model={clientModels.codex || "codex-auto"} models={integrationModels}
-              showPreview={false}
-              onModelChange={(m) => setClientModels((p) => ({ ...p, codex: m }))}
-              onApply={handleApplyClient} onRestore={handleRestoreClient} />
-          ))}
+          {/* Fix #8: showPreview={true} for Codex */}
+          <ClientTabContent
+            clientId="codex"
+            model={clientModels.codex || "cx/auto"}
+            onModelChange={(m) => setClientModels((p) => ({ ...p, codex: m }))}
+            showPreview
+          />
         </TabsContent>
 
         {/* ── Hermes Tab ──────────────────────────────────────── */}
         <TabsContent value="hermes" className="space-y-6">
-          {clients.filter((c) => c.id === "hermes").map((c) => (
-            <ClientCard key={c.id} client={c} baseUrl={baseUrl} apiKey={apiKey}
-              model={clientModels.hermes || defaultModel} models={integrationModels}
-              showPreview={false}
-              onModelChange={(m) => setClientModels((p) => ({ ...p, hermes: m }))}
-              onApply={handleApplyClient} onRestore={handleRestoreClient} />
-          ))}
+          {/* Fix #8: showPreview={true} for Hermes */}
+          <ClientTabContent
+            clientId="hermes"
+            model={clientModels.hermes || defaultModel}
+            onModelChange={(m) => setClientModels((p) => ({ ...p, hermes: m }))}
+            showPreview
+          />
         </TabsContent>
 
         {/* ── OpenClaw Tab ────────────────────────────────────── */}
         <TabsContent value="openclaw" className="space-y-6">
-          {clients.filter((c) => c.id === "openclaw").map((c) => (
-            <ClientCard key={c.id} client={c} baseUrl={baseUrl} apiKey={apiKey}
-              model={clientModels.openclaw || defaultModel} models={integrationModels}
-              showPreview
-              onModelChange={(m) => setClientModels((p) => ({ ...p, openclaw: m }))}
-              onApply={handleApplyClient} onRestore={handleRestoreClient} />
-          ))}
+          <ClientTabContent
+            clientId="openclaw"
+            model={clientModels.openclaw || defaultModel}
+            onModelChange={(m) => setClientModels((p) => ({ ...p, openclaw: m }))}
+            showPreview
+          />
         </TabsContent>
 
         {/* ── Kilo Tab ────────────────────────────────────────── */}
         <TabsContent value="kilo" className="space-y-6">
-          {clients.filter((c) => c.id === "kilo").map((c) => (
-            <ClientCard key={c.id} client={c} baseUrl={baseUrl} apiKey={apiKey}
-              model={clientModels.kilo || defaultModel} models={integrationModels}
-              showPreview
-              onModelChange={(m) => setClientModels((p) => ({ ...p, kilo: m }))}
-              onApply={handleApplyClient} onRestore={handleRestoreClient} />
-          ))}
+          <ClientTabContent
+            clientId="kilo"
+            model={clientModels.kilo || defaultModel}
+            onModelChange={(m) => setClientModels((p) => ({ ...p, kilo: m }))}
+            showPreview
+          />
         </TabsContent>
       </Tabs>
     </div>

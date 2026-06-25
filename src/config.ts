@@ -47,7 +47,7 @@ export const config = {
   relayMaxTunnels: Number(process.env.RELAY_MAX_TUNNELS) || 50,
   relayAutoStart: process.env.RELAY_AUTO_START || "false",
   // Providers: kiro, kiro-pro, codebuddy, canva, codex, qoder
-  providers: ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"] as const,
+  providers: ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "alibaba", "antigravity"] as const,
 } as const;
 
 export type Config = typeof config;

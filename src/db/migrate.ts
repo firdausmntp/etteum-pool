@@ -1,7 +1,8 @@
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { db, client } from "./index";
 import { existsSync } from "node:fs";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
+import { modelMappings, modelCombos } from "./schema";
 
 /**
  * Create all tables if they don't exist (fresh deploy support).
@@ -189,6 +190,32 @@ function ensureTablesExist() {
       updated_at integer
     )`,
     `CREATE INDEX IF NOT EXISTS model_mappings_priority_idx ON model_mappings (priority)`,
+
+    // ── model_combos ──
+    `CREATE TABLE IF NOT EXISTS model_combos (
+      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+      name text NOT NULL UNIQUE,
+      label text,
+      models_json text NOT NULL,
+      enabled integer DEFAULT 1 NOT NULL,
+      created_at integer NOT NULL,
+      updated_at integer
+    )`,
+    `CREATE INDEX IF NOT EXISTS model_combos_name_idx ON model_combos (name)`,
+
+    // ── custom_models ──
+    `CREATE TABLE IF NOT EXISTS custom_models (
+      id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+      model_id text NOT NULL UNIQUE,
+      owned_by text NOT NULL,
+      context_window integer DEFAULT 200000,
+      max_output integer DEFAULT 65536,
+      thinking integer DEFAULT 0 NOT NULL,
+      vision integer DEFAULT 0 NOT NULL,
+      created_at integer NOT NULL,
+      updated_at integer
+    )`,
+    `CREATE INDEX IF NOT EXISTS custom_models_model_id_idx ON custom_models (model_id)`,
   ];
 
   for (const stmt of statements) {
@@ -243,6 +270,137 @@ async function runIdempotentColumns() {
   }
 }
 
+async function migrateModelPrefixes() {
+  const OLD_TO_NEW_MODELS: Record<string, string> = {
+    "antigravity-gemini-3-pro": "ag/gemini-3-pro",
+    "antigravity-gemini-3.1-pro": "ag/gemini-3.1-pro",
+    "antigravity-gemini-3-flash": "ag/gemini-3-flash",
+    "antigravity-claude-sonnet-4-6": "ag/claude-sonnet-4-6",
+    "antigravity-claude-opus-4-6-thinking": "ag/claude-opus-4-6-thinking",
+    
+    "gemini-3-pro": "ag/gemini-3-pro",
+    "gemini-3.1-pro": "ag/gemini-3.1-pro",
+    "gemini-3-flash": "ag/gemini-3-flash",
+    "claude-sonnet-4-6": "ag/claude-sonnet-4-6",
+    "claude-opus-4-6-thinking": "ag/claude-opus-4-6-thinking",
+    "gemini-2.5-flash": "ag/gemini-2.5-flash",
+    "gemini-2.5-pro": "ag/gemini-2.5-pro",
+    "gemini-3-flash-preview": "ag/gemini-3-flash-preview",
+    "gemini-3-pro-preview": "ag/gemini-3-pro-preview",
+    "gemini-3.1-pro-preview": "ag/gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools": "ag/gemini-3.1-pro-preview-customtools",
+    "gemini-3-pro-image": "ag/gemini-3-pro-image",
+    "claude-sonnet-4-5": "ag/claude-sonnet-4-5",
+    "claude-opus-4-5": "ag/claude-opus-4-5",
+  };
+
+  try {
+    const { getProviderForModel, PROVIDER_PREFIXES } = await import("../proxy/providers/registry");
+
+    const getPrefixedModelName = (oldModel: string): string | null => {
+      if (!oldModel) return null;
+      if (OLD_TO_NEW_MODELS[oldModel]) return OLD_TO_NEW_MODELS[oldModel];
+
+      const providerName = getProviderForModel(oldModel);
+      if (!providerName) return null;
+
+      const prefix = PROVIDER_PREFIXES[providerName];
+      if (!prefix) return null;
+
+      // If it already starts with the prefix, no change needed
+      if (oldModel.startsWith(prefix)) return null;
+
+      // Clean up legacy prefixes
+      let cleanId = oldModel;
+      const lower = cleanId.toLowerCase();
+      if (lower.startsWith("kp-")) cleanId = cleanId.slice(3);
+      else if (lower.startsWith("qd-")) cleanId = cleanId.slice(3);
+      else if (lower.startsWith("cb-")) cleanId = cleanId.slice(3);
+      else if (lower.startsWith("codex-")) cleanId = cleanId.slice(6);
+      else if (lower.startsWith("canva-")) cleanId = cleanId.slice(6);
+      else if (lower.startsWith("antigravity-")) cleanId = cleanId.slice(12);
+
+      return `${prefix}${cleanId}`;
+    };
+
+    // 1. Migrate model_mappings table
+    const mappings = await db.select().from(modelMappings);
+    for (const mapping of mappings) {
+      const target = mapping.targetModel;
+      const newTarget = getPrefixedModelName(target);
+      if (newTarget && newTarget !== target) {
+        await db.update(modelMappings)
+          .set({ targetModel: newTarget, updatedAt: new Date() })
+          .where(eq(modelMappings.id, mapping.id));
+        console.log(`[Migration] Migrated mapping target ${target} -> ${newTarget}`);
+      }
+    }
+
+    // 2. Migrate model_combos table
+    const combos = await db.select().from(modelCombos);
+    for (const combo of combos) {
+      const models = combo.modelsJson as unknown as string[];
+      if (Array.isArray(models)) {
+        let changed = false;
+        const newModels = models.map((m) => {
+          const newM = getPrefixedModelName(m);
+          if (newM && newM !== m) {
+            changed = true;
+            return newM;
+          }
+          return m;
+        });
+
+        if (changed) {
+          await db.update(modelCombos)
+            .set({ modelsJson: newModels, updatedAt: new Date() })
+            .where(eq(modelCombos.id, combo.id));
+          console.log(`[Migration] Migrated combo ${combo.name} models list`);
+        }
+      }
+    }
+
+    // 3. Migrate request_logs table
+    const uniqueLogModels = client.prepare("SELECT DISTINCT model FROM request_logs").all() as Array<{ model: string }>;
+    for (const row of uniqueLogModels) {
+      const oldModel = row.model;
+      const newModel = getPrefixedModelName(oldModel);
+      if (newModel && newModel !== oldModel) {
+        client.prepare("UPDATE request_logs SET model = ? WHERE model = ?").run(newModel, oldModel);
+        console.log(`[Migration] Migrated request_logs model ${oldModel} -> ${newModel}`);
+      }
+    }
+
+    // 4. Migrate usage_summary table
+    const uniqueSummaryModels = client.prepare("SELECT DISTINCT model FROM usage_summary").all() as Array<{ model: string }>;
+    for (const row of uniqueSummaryModels) {
+      const oldModel = row.model;
+      const newModel = getPrefixedModelName(oldModel);
+      if (newModel && newModel !== oldModel) {
+        client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(newModel, oldModel);
+        console.log(`[Migration] Migrated usage_summary model ${oldModel} -> ${newModel}`);
+      }
+    }
+
+    // 5. Migrate image_studio_chats table
+    try {
+      const uniqueAssistModels = client.prepare("SELECT DISTINCT assist_model FROM image_studio_chats WHERE assist_model IS NOT NULL").all() as Array<{ assist_model: string }>;
+      for (const row of uniqueAssistModels) {
+        const oldModel = row.assist_model;
+        const newModel = getPrefixedModelName(oldModel);
+        if (newModel && newModel !== oldModel) {
+          client.prepare("UPDATE image_studio_chats SET assist_model = ? WHERE assist_model = ?").run(newModel, oldModel);
+          console.log(`[Migration] Migrated image_studio_chats assist_model ${oldModel} -> ${newModel}`);
+        }
+      }
+    } catch {
+      // Ignore if table or column doesn't exist
+    }
+  } catch (err) {
+    console.error("[Migration] Failed to migrate model prefixes:", err);
+  }
+}
+
 export async function runMigrations() {
   // Always ensure tables exist (handles fresh deploys without migration files)
   ensureTablesExist();
@@ -260,6 +418,9 @@ export async function runMigrations() {
 
   // Always run idempotent column-add migrations (works on fresh deploys without drizzle/).
   await runIdempotentColumns();
+
+  // Run the model prefix migration for previous models
+  await migrateModelPrefixes();
 }
 
 // Run if called directly

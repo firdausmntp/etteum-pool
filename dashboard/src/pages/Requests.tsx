@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -8,12 +9,21 @@ import { fetchRequests, fetchRequestDetail } from "@/lib/api";
 import { formatDateTimeID } from "@/lib/utils";
 import { useWsEvent } from "@/hooks/useWebSocket";
 
+interface ActiveStream {
+  id: number;
+  provider: string;
+  model: string;
+  accountEmail: string;
+  promptTokens: number;
+  startedAt: number;
+}
+
 interface RequestLog {
   id: number;
   createdAt: string;
   provider: string;
   model: string | null;
-  status: "success" | "error";
+  status: "success" | "error" | "streaming";
   durationMs: number | null;
   promptTokens: number | null;
   completionTokens: number | null;
@@ -62,7 +72,184 @@ function labelProvider(provider: string) {
   return provider === "codebuddy" ? "CodeBuddy" : provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
+const PROVIDER_COLORS: Record<string, string> = {
+  kiro: "bg-[var(--chart-1)]/15 text-[var(--chart-1)]",
+  "kiro-pro": "bg-[var(--chart-2)]/15 text-[var(--chart-2)]",
+  codebuddy: "bg-[var(--chart-3)]/15 text-[var(--chart-3)]",
+  canva: "bg-[var(--chart-4)]/15 text-[var(--chart-4)]",
+  qoder: "bg-[var(--chart-5)]/15 text-[var(--chart-5)]",
+  byok: "bg-[var(--chart-6)]/15 text-[var(--chart-6)]",
+};
+
+function providerBadgeClass(provider: string): string {
+  return PROVIDER_COLORS[provider] ?? "bg-[var(--secondary)] text-[var(--foreground)]";
+}
+
+const FLOW_PROVIDERS = ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "alibaba", "antigravity", "mimo", "byok"];
+
+const PROVIDER_HEX: Record<string, string> = {
+  kiro: "#22c55e",
+  "kiro-pro": "#a855f7",
+  codebuddy: "#f59e0b",
+  canva: "#ec4899",
+  codex: "#3b82f6",
+  qoder: "#14b8a6",
+  alibaba: "#f97316",
+  antigravity: "#8b5cf6",
+  mimo: "#06b6d4",
+  byok: "#6b7280",
+};
+
+interface FlowViewProps {
+  activeStreams: Map<number, ActiveStream>;
+  logs: RequestLog[];
+}
+
+function FlowView({ activeStreams, logs }: FlowViewProps) {
+  const providerCounts = logs.reduce<Record<string, number>>((acc, l) => {
+    acc[l.provider] = (acc[l.provider] || 0) + 1;
+    return acc;
+  }, {});
+
+  const W = 700, H = 500;
+  const cx = W / 2, cy = H / 2;
+  const radius = 190;
+
+  const providerPositions = FLOW_PROVIDERS.map((p, i) => {
+    const angle = (i / FLOW_PROVIDERS.length) * 2 * Math.PI - Math.PI / 2;
+    return { id: p, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+  });
+
+  const activeStreamList = Array.from(activeStreams.values());
+
+  return (
+    <div className="relative w-full rounded-lg border border-[var(--border)] bg-[var(--background)]" style={{ minHeight: 480 }}>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+        <defs>
+          {activeStreamList.map((stream) => {
+            const target = providerPositions.find((p) => p.id === stream.provider);
+            if (!target) return null;
+            const color = PROVIDER_HEX[stream.provider] || "#fff";
+            return (
+              <radialGradient key={`glow-${stream.startedAt}`} id={`glow-${stream.startedAt}`} cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor={color} stopOpacity="1" />
+                <stop offset="100%" stopColor={color} stopOpacity="0" />
+              </radialGradient>
+            );
+          })}
+        </defs>
+
+        {/* Connection lines */}
+        {providerPositions.map((p) => {
+          const isActive = activeStreamList.some((s) => s.provider === p.id);
+          return (
+            <line
+              key={p.id}
+              x1={cx} y1={cy} x2={p.x} y2={p.y}
+              stroke={isActive ? (PROVIDER_HEX[p.id] || "var(--primary)") : "var(--border)"}
+              strokeWidth={isActive ? "1.5" : "1"}
+              opacity={isActive ? 0.5 : 0.25}
+            />
+          );
+        })}
+
+        {/* Active stream particles */}
+        {activeStreamList.map((stream) => {
+          const target = providerPositions.find((p) => p.id === stream.provider);
+          if (!target) return null;
+          const pathD = `M ${cx} ${cy} L ${target.x} ${target.y}`;
+          const color = PROVIDER_HEX[stream.provider] || "#fff";
+          return (
+            <g key={stream.startedAt}>
+              {/* Glow halo */}
+              <circle r="10" fill={color} opacity="0.15">
+                <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
+              </circle>
+              {/* Main particle */}
+              <circle r="4.5" fill={color} opacity="0.95">
+                <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
+              </circle>
+            </g>
+          );
+        })}
+
+        {/* Center node */}
+        <circle cx={cx} cy={cy} r={38} fill="var(--background)" stroke="var(--primary)" strokeWidth="2" />
+        <circle cx={cx} cy={cy} r={38} fill="var(--primary)" opacity="0.06" />
+        <text x={cx} y={cy - 5} textAnchor="middle" fill="var(--foreground)" fontSize="14" fontWeight="bold" fontFamily="inherit">
+          etteum
+        </text>
+        <text x={cx} y={cy + 12} textAnchor="middle" fill="var(--muted-foreground)" fontSize="9" fontFamily="inherit">
+          {activeStreamList.length > 0 ? `${activeStreamList.length} active` : "pool"}
+        </text>
+
+        {/* Provider nodes */}
+        {providerPositions.map((p) => {
+          const isActive = activeStreamList.some((s) => s.provider === p.id);
+          const count = providerCounts[p.id] || 0;
+          const color = PROVIDER_HEX[p.id] || "var(--primary)";
+          // Shorten label for display
+          const label = p.id.length > 8 ? p.id.slice(0, 7) + "…" : p.id;
+          return (
+            <g key={p.id}>
+              {/* Active glow ring */}
+              {isActive && (
+                <circle
+                  cx={p.x} cy={p.y} r={28}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth="6"
+                  opacity="0.18"
+                />
+              )}
+              <circle
+                cx={p.x} cy={p.y} r={22}
+                fill="var(--background)"
+                stroke={isActive ? color : "var(--border)"}
+                strokeWidth={isActive ? "2.5" : "1.5"}
+                opacity={isActive ? 1 : 0.7}
+              />
+              {/* Colored dot */}
+              <circle cx={p.x} cy={p.y - 6} r={4} fill={color} opacity={isActive ? 1 : 0.4} />
+              <text x={p.x} y={p.y + 9} textAnchor="middle" fill="var(--foreground)" fontSize="8.5" fontFamily="inherit" opacity={isActive ? 1 : 0.6}>
+                {label}
+              </text>
+              {/* Request count badge */}
+              {count > 0 && (
+                <g>
+                  <circle cx={p.x + 17} cy={p.y - 17} r={9} fill={color} opacity="0.9" />
+                  <text x={p.x + 17} y={p.y - 13} textAnchor="middle" fill="#fff" fontSize="8" fontWeight="bold" fontFamily="inherit">
+                    {count > 99 ? "99+" : count}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Legend */}
+      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+        <span className="flex items-center gap-1.5">
+          <span className="block h-1.5 w-1.5 rounded-full bg-[var(--success)] opacity-80" />
+          Particle = active stream
+        </span>
+        <span>{logs.length} total requests</span>
+      </div>
+    </div>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 export default function Requests() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const viewMode = (searchParams.get("view") || "table") as "table" | "flow";
+
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [search, setSearch] = useState("");
   const [provider, setProvider] = useState("all");
@@ -71,6 +258,8 @@ export default function Requests() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [page, setPage] = useState(1);
   const perPage = 25;
+  const [activeStreams, setActiveStreams] = useState<Map<number, ActiveStream>>(new Map());
+  const [now, setNow] = useState<number>(Date.now());
 
   /**
    * Open the detail drawer for a row. The list endpoint omits the heavy
@@ -115,11 +304,61 @@ export default function Requests() {
     setPage(1);
   }, [search]);
 
+  useWsEvent("request_started", (msg) => {
+    const d = msg.data as { id: number; provider: string; model: string; accountEmail?: string; email?: string; promptTokens?: number };
+    setNow(Date.now());
+    setActiveStreams((prev) => {
+      const next = new Map(prev);
+      next.set(d.id, {
+        id: d.id,
+        provider: d.provider,
+        model: d.model,
+        accountEmail: d.accountEmail || d.email || "",
+        promptTokens: d.promptTokens || 0,
+        startedAt: Date.now(),
+      });
+      return next;
+    });
+  });
+
   useWsEvent(["request_log"], (msg) => {
     if (msg.type === "request_log") {
-      setLogs((current) => [msg.data as RequestLog, ...current].slice(0, 100));
+      const incoming = msg.data as RequestLog;
+
+      // BUG 3: skip entries that don't match the active provider filter
+      if (provider && provider !== "all" && incoming.provider !== provider) {
+        return;
+      }
+
+      setLogs((current) => {
+        const existing = current.findIndex((l) => l.id === incoming.id);
+        if (existing >= 0) {
+          // Update existing entry (e.g. streaming → success/error)
+          const updated = [...current];
+          updated[existing] = incoming;
+          return updated;
+        }
+        // New entry — prepend
+        return [incoming, ...current].slice(0, 100);
+      });
+
+      // Only remove from active streams once the final status arrives
+      if (incoming.status !== "streaming") {
+        setActiveStreams((prev) => {
+          if (!prev.has(incoming.id)) return prev;
+          const next = new Map(prev);
+          next.delete(incoming.id);
+          return next;
+        });
+      }
     }
   });
+
+  useEffect(() => {
+    if (activeStreams.size === 0) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [activeStreams.size]);
 
   const filtered = logs.filter((req) => {
     const q = search.toLowerCase();
@@ -137,12 +376,36 @@ export default function Requests() {
         <div>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">Requests</h1>
           <p className="text-sm text-[var(--muted-foreground)] mt-1">
-            Recent API request logs from PostgreSQL
+            Recent API request logs
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-          <RefreshCw className="w-4 h-4 mr-2" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border border-[var(--border)] overflow-hidden text-sm">
+            <button
+              onClick={() => setSearchParams({ view: "table" })}
+              className={`px-3 py-1.5 text-sm transition-colors ${
+                viewMode === "table"
+                  ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                  : "bg-[var(--background)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Table
+            </button>
+            <button
+              onClick={() => setSearchParams({ view: "flow" })}
+              className={`px-3 py-1.5 text-sm transition-colors border-l border-[var(--border)] ${
+                viewMode === "flow"
+                  ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                  : "bg-[var(--background)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Flow
+            </button>
+          </div>
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className="w-4 h-4 mr-2" /> Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row">
@@ -158,6 +421,49 @@ export default function Requests() {
         </select>
       </div>
 
+      {activeStreams.size > 0 && (
+        <div className="mb-4 space-y-2">
+          <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+            <span className="block h-2 w-2 rounded-full bg-[var(--success)] animate-pulse" />
+            Live Streams
+          </p>
+          {Array.from(activeStreams.values()).map((stream) => {
+            const elapsed = now - stream.startedAt;
+            return (
+              <div
+                key={stream.id}
+                className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--background)] px-3"
+                style={{ height: 44 }}
+              >
+                <span className="block h-2 w-2 shrink-0 rounded-full bg-[var(--success)] animate-pulse" />
+                <span className={`shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ${providerBadgeClass(stream.provider)}`}>
+                  {labelProvider(stream.provider)}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--foreground)]">
+                  {stream.model}
+                </span>
+                <span className="hidden shrink-0 text-xs text-[var(--muted-foreground)] sm:inline">
+                  {stream.accountEmail}
+                </span>
+                {stream.promptTokens > 0 && (
+                  <span className="shrink-0 text-xs text-[var(--muted-foreground)]">
+                    ~{stream.promptTokens}tk
+                  </span>
+                )}
+                <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--foreground)]">
+                  {formatElapsed(elapsed)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {viewMode === "flow" && (
+        <FlowView activeStreams={activeStreams} logs={logs} />
+      )}
+
+      {viewMode === "table" && (
       <Card className="border-[var(--border)]">
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -207,6 +513,7 @@ export default function Requests() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {selected && (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={() => setSelected(null)}>

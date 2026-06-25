@@ -180,11 +180,42 @@ export const modelMappings = sqliteTable("model_mappings", {
   targetModel: text("target_model").notNull().default(""), // model id available in the pool
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   priority: integer("priority").notNull().default(0), // lower = evaluated first
-  label: text("label"), // optional human label e.g. "Claude Code · Haiku"
+  label: text("label"), // optional human label e.g. "the assistant · Haiku"
   createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 }, (table) => [
   index("model_mappings_priority_idx").on(table.priority),
+]);
+
+// Model combos — named chains of models with fallback priority.
+// When a request uses a combo name (e.g. "bahlil"), the proxy tries each model
+// in order (modelsJson array). If the first model fails, it falls back to the next.
+// Each entry in modelsJson is a string model id like "qwen-plus" or "gemini-3-pro".
+export const modelCombos = sqliteTable("model_combos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull().unique(), // combo name used as model id (e.g. "bahlil")
+  label: text("label"), // human-readable label
+  modelsJson: text("models_json", { mode: "json" }).notNull().$defaultFn(() => []), // ordered array: ["qwen-plus", "gemini-3-flash", "antigravity-gemini-3-pro"]
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+}, (table) => [
+  index("model_combos_name_idx").on(table.name),
+]);
+
+// Dynamic custom models managed by users via dashboard models page
+export const customModels = sqliteTable("custom_models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  modelId: text("model_id").notNull().unique(), // e.g. "ag/gemini-3.5-pro"
+  ownedBy: text("owned_by").notNull(), // e.g. "antigravity", "kiro", "byok" etc.
+  contextWindow: integer("context_window").default(200000),
+  maxOutput: integer("max_output").default(65536),
+  thinking: integer("thinking", { mode: "boolean" }).notNull().default(false),
+  vision: integer("vision", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+}, (table) => [
+  index("custom_models_model_id_idx").on(table.modelId),
 ]);
 
 // Type exports
@@ -209,3 +240,7 @@ export type FilterRule = typeof filterRules.$inferSelect;
 export type NewFilterRule = typeof filterRules.$inferInsert;
 export type ModelMapping = typeof modelMappings.$inferSelect;
 export type NewModelMapping = typeof modelMappings.$inferInsert;
+export type ModelCombo = typeof modelCombos.$inferSelect;
+export type NewModelCombo = typeof modelCombos.$inferInsert;
+export type CustomModel = typeof customModels.$inferSelect;
+export type NewCustomModel = typeof customModels.$inferInsert;
