@@ -26,10 +26,11 @@ from app.providers.base import NormalizedAccount, ProviderAdapter
 
 # ── Antigravity OAuth Constants ─────────────────────────────────────────────
 
-ANTIGRAVITY_CLIENT_ID = (
-    "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER"
+ANTIGRAVITY_CLIENT_ID = os.getenv(
+    "ANTIGRAVITY_CLIENT_ID",
+    "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
 )
-ANTIGRAVITY_CLIENT_SECRET = "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER"
+ANTIGRAVITY_CLIENT_SECRET = os.getenv("ANTIGRAVITY_CLIENT_SECRET", "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER")
 ANTIGRAVITY_SCOPES = [
     "https://www.googleapis.com/auth/cloud-platform",
     "https://www.googleapis.com/auth/userinfo.email",

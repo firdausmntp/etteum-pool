@@ -185,68 +185,7 @@ app.get("/api/oauth-callback/poll", (c) => {
   return c.json({ waiting: true });
 });
 
-app.get("/temp-debug-db", async (c) => {
-  const accountsData = await db.select().from(accounts);
-  const customModelsData = await db.select().from(customModels);
-  return c.json({ accounts: accountsData, customModels: customModelsData });
-});
 
-app.get("/test-google-projects", async (c) => {
-  const refreshToken = "ANTIGRAVITY_REFRESH_TOKEN_PLACEHOLDER";
-  
-  // 1. Refresh access token
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
-      client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
-    }),
-  });
-  
-  if (!tokenRes.ok) {
-    return c.json({ error: "refresh failed", status: tokenRes.status, text: await tokenRes.text() });
-  }
-  
-  const tokenData = await tokenRes.json() as any;
-  const accessToken = tokenData.access_token;
-  
-  const endpoints = [
-    "https://cloudcode-pa.googleapis.com",
-    "https://daily-cloudcode-pa.sandbox.googleapis.com",
-    "https://autopush-cloudcode-pa.sandbox.googleapis.com",
-    "https://cloudresourcemanager.googleapis.com"
-  ];
-  
-  const results: Record<string, any> = {};
-  
-  for (const endpoint of endpoints) {
-    try {
-      const isResourceManager = endpoint.includes("cloudresourcemanager");
-      const path = isResourceManager ? "/v1/projects" : "/v1/projects";
-      const res = await fetch(`${endpoint}${path}`, {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-        }
-      });
-      const text = await res.text();
-      try {
-        results[endpoint] = JSON.parse(text);
-      } catch {
-        results[endpoint] = { status: res.status, raw: text };
-      }
-    } catch (err: any) {
-      results[endpoint] = { error: err.message };
-    }
-  }
-  
-  return c.json({
-    accessToken: accessToken.slice(0, 15) + "...",
-    results
-  });
-});
 
 // Mount routes
 app.route("/", proxyRouter); // /v1/chat/completions, /v1/models

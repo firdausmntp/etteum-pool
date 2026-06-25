@@ -48,6 +48,9 @@ export const config = {
   relayAutoStart: process.env.RELAY_AUTO_START || "false",
   // Providers: kiro, kiro-pro, codebuddy, canva, codex, qoder
   providers: ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder", "alibaba", "antigravity"] as const,
+  // Antigravity (Google CloudCode) OAuth credentials
+  antigravityClientId: process.env.ANTIGRAVITY_CLIENT_ID || "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
+  antigravityClientSecret: process.env.ANTIGRAVITY_CLIENT_SECRET || "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
 } as const;
 
 export type Config = typeof config;

@@ -16,8 +16,6 @@ import { config } from "../../config";
 // Antigravity Constants
 // ============================================================================
 
-const ANTIGRAVITY_CLIENT_ID = "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER";
-const ANTIGRAVITY_CLIENT_SECRET = "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000; // 5 min buffer
 
@@ -286,8 +284,8 @@ async function refreshAccessToken(
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: refreshToken,
-        client_id: ANTIGRAVITY_CLIENT_ID,
-        client_secret: ANTIGRAVITY_CLIENT_SECRET,
+        client_id: config.antigravityClientId,
+        client_secret: config.antigravityClientSecret,
       }),
       ...(proxy ? { proxy: proxy.url } : {}),
     } as any);

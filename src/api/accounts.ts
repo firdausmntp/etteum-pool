@@ -11,6 +11,7 @@ import { warmupAccount } from "../auth/warmup-runner";
 import { pool, type ProviderName } from "../proxy/pool";
 import { activateQoderPat } from "../proxy/providers/qoder";
 import { fetchProjectId } from "../proxy/providers/antigravity";
+import { config } from "../config";
 
 export const accountsRouter = new Hono();
 
@@ -732,8 +733,8 @@ accountsRouter.post("/antigravity/:id/refresh-token", async (c) => {
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: refreshToken,
-        client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
-        client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
+        client_id: config.antigravityClientId,
+        client_secret: config.antigravityClientSecret,
       }),
     });
 
@@ -1364,8 +1365,8 @@ accountsRouter.post("/:id/test", async (c) => {
             body: new URLSearchParams({
               grant_type: "refresh_token",
               refresh_token: refreshToken.split("|")[0] || refreshToken,
-              client_id: "ANTIGRAVITY_CLIENT_ID_PLACEHOLDER",
-              client_secret: "ANTIGRAVITY_CLIENT_SECRET_PLACEHOLDER",
+              client_id: config.antigravityClientId,
+              client_secret: config.antigravityClientSecret,
             }),
           });
           if (!tokenRes.ok) {
