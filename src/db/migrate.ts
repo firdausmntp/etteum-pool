@@ -382,16 +382,13 @@ async function migrateModelPrefixes() {
 
     // 4. Migrate usage_summary table — skip combo names
     // Also fix any combo names that were incorrectly prefixed (e.g. kr/bahlil -> bahlil)
-    const comboNamesList = Array.from(comboNames);
-    for (const comboName of comboNamesList) {
-      const prefix = comboName.startsWith("kr/") || comboName.startsWith("qd/") || comboName.startsWith("cb/") || comboName.startsWith("kp/") || comboName.startsWith("mm/") || comboName.startsWith("cv/") || comboName.startsWith("cx/") || comboName.startsWith("ag/") || comboName.startsWith("ali/");
-      if (prefix) {
-        // Remove prefix from combo name
-        const cleanName = comboName.split("/")[1] || comboName;
-        client.prepare("UPDATE request_logs SET model = ? WHERE model = ?").run(cleanName, comboName);
-        client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(cleanName, comboName);
-        client.prepare("UPDATE model_mappings SET target_model = ? WHERE target_model = ?").run(cleanName, comboName);
-        console.log(`[Migration] Fixed incorrectly prefixed combo name: ${comboName} -> ${cleanName}`);
+    const comboPrefixes = Object.values(PROVIDER_PREFIXES);
+    for (const comboName of comboNames) {
+      for (const pfx of comboPrefixes) {
+        const prefixed = `${pfx}${comboName}`;
+        client.prepare("UPDATE request_logs SET model = ? WHERE model = ?").run(comboName, prefixed);
+        client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(comboName, prefixed);
+        client.prepare("UPDATE model_mappings SET target_model = ? WHERE target_model = ?").run(comboName, prefixed);
       }
     }
 
