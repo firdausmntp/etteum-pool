@@ -11,6 +11,7 @@ import {
   DialogTitle as DTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { GripVertical } from "lucide-react";
 import { Plus, Upload, RefreshCw, Play, RotateCcw, Flame, ChevronDown, Loader2, Key, Pencil, Trash2, Zap, FlaskConical, Lock, Shield, Users, Table2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
@@ -86,6 +87,37 @@ export default function Accounts() {
   const [autoWarmup, setAutoWarmup] = useState<AutoWarmupStatus | null>(null);
   const [settingsMap, setSettingsMap] = useState<Record<string, string>>({});
   const [now, setNow] = useState<number>(Date.now());
+
+  // Drag-and-drop provider ordering
+  const [providerOrder, setProviderOrder] = useState<Provider[]>(() => {
+    try {
+      const saved = localStorage.getItem("etteum-provider-order");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Provider[];
+        const savedSet = new Set(parsed);
+        const allSet = new Set(providers);
+        if (savedSet.size === allSet.size && [...allSet].every(p => savedSet.has(p))) return parsed;
+      }
+    } catch {}
+    return [...providers];
+  });
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const handleDragStart = (idx: number) => setDragIdx(idx);
+  const handleDragEnter = (idx: number) => {
+    if (dragIdx === null || dragIdx === idx) return;
+    setProviderOrder(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(dragIdx, 1);
+      next.splice(idx, 0, moved);
+      return next;
+    });
+    setDragIdx(idx);
+  };
+  const handleDragEnd = () => {
+    setDragIdx(null);
+    localStorage.setItem("etteum-provider-order", JSON.stringify(providerOrder));
+  };
 
   const [addForm, setAddForm] = useState({ email: "", password: "", provider: "kiro" as Provider, browserEngine: "camoufox", headless: false });
   const [addDialogProvider, setAddDialogProvider] = useState<Provider | null>(null);
@@ -946,7 +978,7 @@ export default function Accounts() {
   }
 
   const providerStats = useMemo(() => {
-    return providers.map((provider) => {
+    return providerOrder.map((provider) => {
       const rows = accounts.filter((a) => a.provider === provider);
       const quotaLimit = rows.reduce((sum, a) => sum + (a.quotaLimit || 0), 0);
       const quotaRemaining = rows.reduce((sum, a) => sum + (a.quotaRemaining || 0), 0);
@@ -960,7 +992,7 @@ export default function Accounts() {
         credits: { used: Math.max(0, quotaLimit - quotaRemaining), total: quotaLimit, remaining: quotaRemaining },
       };
     });
-  }, [accounts]);
+  }, [accounts, providerOrder]);
 
   return (
     <div className="space-y-6">
@@ -1002,18 +1034,33 @@ export default function Accounts() {
 
       {/* Provider cards */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        {providerStats.map((stat) => (
-          <Card
-            key={stat.provider}
-            className="border-[var(--border)] cursor-pointer hover:border-[var(--primary)]/50 transition-colors"
-            onClick={() => navigate(`/accounts/${stat.provider}`)}
-          >
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base">{labelProvider(stat.provider)}</CardTitle>
-                <span className="text-xs text-[var(--muted-foreground)]">{stat.total} accounts</span>
-              </div>
-            </CardHeader>
+        {providerStats.map((stat, idx) => {
+          const isDragging = dragIdx === idx;
+          return (
+            <Card
+              key={stat.provider}
+              draggable
+              onDragStart={() => handleDragStart(idx)}
+              onDragEnter={() => handleDragEnter(idx)}
+              onDragEnd={handleDragEnd}
+              onDragOver={(e) => e.preventDefault()}
+              className={`border-[var(--border)] cursor-pointer hover:border-[var(--primary)]/50 transition-all ${
+                isDragging ? "opacity-50 scale-[0.97]" : "opacity-100"
+              }`}
+              onClick={() => navigate(`/accounts/${stat.provider}`)}
+            >
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <GripVertical
+                      className="h-4 w-4 text-[var(--muted-foreground)] cursor-grab active:cursor-grabbing flex-shrink-0"
+                      onDragStart={(e) => e.stopPropagation()}
+                    />
+                    <CardTitle className="text-base">{labelProvider(stat.provider)}</CardTitle>
+                  </div>
+                  <span className="text-xs text-[var(--muted-foreground)]">{stat.total} accounts</span>
+                </div>
+              </CardHeader>
             <CardContent className="space-y-4">
               {/* Status grid */}
               <div className="grid grid-cols-4 gap-2 text-center">
@@ -1128,7 +1175,8 @@ export default function Accounts() {
               )}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
 
       {/* BYOK Providers Section */}

@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Search, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fetchRequests, fetchRequestDetail } from "@/lib/api";
+import { fetchRequests, fetchRequestDetail, fetchAccounts } from "@/lib/api";
 import { formatDateTimeID } from "@/lib/utils";
 import { useWsEvent } from "@/hooks/useWebSocket";
 
@@ -103,138 +103,245 @@ const PROVIDER_HEX: Record<string, string> = {
 interface FlowViewProps {
   activeStreams: Map<number, ActiveStream>;
   logs: RequestLog[];
+  openDetail: (req: RequestLog) => void;
+  accountQuotas: Record<string, { total: number; remaining: number }>;
 }
 
-function FlowView({ activeStreams, logs }: FlowViewProps) {
-  const providerCounts = logs.reduce<Record<string, number>>((acc, l) => {
-    acc[l.provider] = (acc[l.provider] || 0) + 1;
-    return acc;
-  }, {});
-
-  const W = 700, H = 500;
+function FlowView({ activeStreams, logs, openDetail, accountQuotas }: FlowViewProps) {
+  const W = 480, H = 360;
   const cx = W / 2, cy = H / 2;
-  const radius = 190;
-
-  const providerPositions = FLOW_PROVIDERS.map((p, i) => {
-    const angle = (i / FLOW_PROVIDERS.length) * 2 * Math.PI - Math.PI / 2;
-    return { id: p, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
-  });
+  const radius = 120;
 
   const activeStreamList = Array.from(activeStreams.values());
 
+  // Show providers that have quota (from accounts)
+  const quotaProviders = FLOW_PROVIDERS.filter((p) => accountQuotas[p] && accountQuotas[p].total > 0);
+
+  const providerPositions = quotaProviders.map((p, i) => {
+    const angle = (i / Math.max(quotaProviders.length, 1)) * 2 * Math.PI - Math.PI / 2;
+    return { id: p, x: cx + radius * Math.cos(angle), y: cy + radius * Math.sin(angle) };
+  });
+
+  const recentRequests = logs.slice(0, 25);
+
+  const PANEL_WIDTH = 260;
+
+  // Provider logo config
+  const LOGO_COLORS: Record<string, string> = {
+    kiro: "#8b5cf6",
+    "kiro-pro": "#a78bfa",
+    codebuddy: "#f59e0b",
+    canva: "#e84393",
+    codex: "#3b82f6",
+    qoder: "#14b8a6",
+    mimo: "#f97316",
+    alibaba: "#ea580c",
+    antigravity: "#6366f1",
+    byok: "#64748b",
+  };
+
+  const LOGO_LABELS: Record<string, string> = {
+    kiro: "K",
+    "kiro-pro": "KP",
+    codebuddy: "CB",
+    canva: "Ca",
+    codex: "Cx",
+    qoder: "Qd",
+    mimo: "Mm",
+    alibaba: "Ali",
+    antigravity: "Ag",
+    byok: "BY",
+  };
+
+  const LOGO_IMAGES: Record<string, string> = {
+    kiro: "/kiro.png",
+    "kiro-pro": "/kiro.png",
+    qoder: "/qoder.png",
+    mimo: "/mimo.png",
+  };
+
   return (
-    <div className="relative w-full rounded-lg border border-[var(--border)] bg-[var(--background)]" style={{ minHeight: 480 }}>
-      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
-        <defs>
+    <div className="flex flex-col md:flex-row gap-4 rounded-lg border border-[var(--border)] bg-[var(--background)] overflow-hidden p-4" style={{ minHeight: 420 }}>
+      {/* Left: Graph */}
+      <div className="relative flex-1 rounded-lg border border-[var(--border)] overflow-hidden" style={{ minHeight: 400, background: "var(--background)" }}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block", maxHeight: 400 }}>
+          <defs>
+            {/* Grid pattern */}
+            <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="var(--border)" strokeWidth="0.3" opacity="0.3" />
+            </pattern>
+            {/* Glow for active streams */}
+            {activeStreamList.map((stream) => {
+              const target = providerPositions.find((p) => p.id === stream.provider);
+              if (!target) return null;
+              const color = PROVIDER_HEX[stream.provider] || "#fff";
+              return (
+                <radialGradient key={`glow-${stream.startedAt}`} id={`glow-${stream.startedAt}`} cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor={color} stopOpacity="1" />
+                  <stop offset="100%" stopColor={color} stopOpacity="0" />
+                </radialGradient>
+              );
+            })}
+          </defs>
+
+          {/* Background grid */}
+          <rect width={W} height={H} fill="url(#grid)" />
+
+          {/* Connection lines - curved */}
+          {providerPositions.map((p) => {
+            const isActive = activeStreamList.some((s) => s.provider === p.id);
+            const mx = (cx + p.x) / 2;
+            const my = (cy + p.y) / 2;
+            const offset = 15;
+            const cpx = mx + (p.y - cy) * 0.15;
+            const cpy = my - (p.x - cx) * 0.15;
+            return (
+              <path
+                key={p.id}
+                d={`M ${cx} ${cy} Q ${cpx} ${cpy} ${p.x} ${p.y}`}
+                fill="none"
+                stroke={isActive ? (PROVIDER_HEX[p.id] || "#e2e8f0") : "#d4d4d8"}
+                strokeWidth={isActive ? "1.5" : "1"}
+                opacity={isActive ? 0.7 : 0.35}
+              />
+            );
+          })}
+
+          {/* Active stream particles */}
           {activeStreamList.map((stream) => {
             const target = providerPositions.find((p) => p.id === stream.provider);
             if (!target) return null;
+            const mx = (cx + target.x) / 2;
+            const my = (cy + target.y) / 2;
+            const cpx = mx + (target.y - cy) * 0.15;
+            const cpy = my - (target.x - cx) * 0.15;
+            const pathD = `M ${cx} ${cy} Q ${cpx} ${cpy} ${target.x} ${target.y}`;
             const color = PROVIDER_HEX[stream.provider] || "#fff";
             return (
-              <radialGradient key={`glow-${stream.startedAt}`} id={`glow-${stream.startedAt}`} cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stopColor={color} stopOpacity="1" />
-                <stop offset="100%" stopColor={color} stopOpacity="0" />
-              </radialGradient>
+              <g key={stream.startedAt}>
+                <circle r="6" fill={color} opacity="0.1">
+                  <animateMotion dur="1.2s" repeatCount="indefinite" path={pathD} />
+                </circle>
+                <circle r="2.5" fill={color} opacity="0.9">
+                  <animateMotion dur="1.2s" repeatCount="indefinite" path={pathD} />
+                </circle>
+              </g>
             );
           })}
-        </defs>
 
-        {/* Connection lines */}
-        {providerPositions.map((p) => {
-          const isActive = activeStreamList.some((s) => s.provider === p.id);
-          return (
-            <line
-              key={p.id}
-              x1={cx} y1={cy} x2={p.x} y2={p.y}
-              stroke={isActive ? (PROVIDER_HEX[p.id] || "var(--primary)") : "var(--border)"}
-              strokeWidth={isActive ? "1.5" : "1"}
-              opacity={isActive ? 0.5 : 0.25}
-            />
-          );
-        })}
+          {/* Center node */}
+          <rect x={cx - 38} y={cy - 20} width={76} height={40} rx={8} fill="var(--card)" stroke="#22c55e" strokeWidth="2" />
+          <text x={cx} y={cy + 5} textAnchor="middle" fill="var(--foreground)" fontSize="14" fontWeight="bold" fontFamily="inherit">
+            etteum
+          </text>
 
-        {/* Active stream particles */}
-        {activeStreamList.map((stream) => {
-          const target = providerPositions.find((p) => p.id === stream.provider);
-          if (!target) return null;
-          const pathD = `M ${cx} ${cy} L ${target.x} ${target.y}`;
-          const color = PROVIDER_HEX[stream.provider] || "#fff";
-          return (
-            <g key={stream.startedAt}>
-              {/* Glow halo */}
-              <circle r="10" fill={color} opacity="0.15">
-                <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
-              </circle>
-              {/* Main particle */}
-              <circle r="4.5" fill={color} opacity="0.95">
-                <animateMotion dur="1.5s" repeatCount="indefinite" path={pathD} />
-              </circle>
-            </g>
-          );
-        })}
-
-        {/* Center node */}
-        <circle cx={cx} cy={cy} r={38} fill="var(--background)" stroke="var(--primary)" strokeWidth="2" />
-        <circle cx={cx} cy={cy} r={38} fill="var(--primary)" opacity="0.06" />
-        <text x={cx} y={cy - 5} textAnchor="middle" fill="var(--foreground)" fontSize="14" fontWeight="bold" fontFamily="inherit">
-          etteum
-        </text>
-        <text x={cx} y={cy + 12} textAnchor="middle" fill="var(--muted-foreground)" fontSize="9" fontFamily="inherit">
-          {activeStreamList.length > 0 ? `${activeStreamList.length} active` : "pool"}
-        </text>
-
-        {/* Provider nodes */}
-        {providerPositions.map((p) => {
-          const isActive = activeStreamList.some((s) => s.provider === p.id);
-          const count = providerCounts[p.id] || 0;
-          const color = PROVIDER_HEX[p.id] || "var(--primary)";
-          // Shorten label for display
-          const label = p.id.length > 8 ? p.id.slice(0, 7) + "…" : p.id;
-          return (
-            <g key={p.id}>
-              {/* Active glow ring */}
-              {isActive && (
-                <circle
-                  cx={p.x} cy={p.y} r={28}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth="6"
-                  opacity="0.18"
+          {/* Provider nodes with logo */}
+          {providerPositions.map((p) => {
+            const isActive = activeStreamList.some((s) => s.provider === p.id);
+            const quota = accountQuotas[p.id] || { total: 0, remaining: 0 };
+            const color = LOGO_COLORS[p.id] || "#64748b";
+            const pct = quota.total > 0 ? Math.round((quota.remaining / quota.total) * 100) : 0;
+            const pw = 110, ph = 36;
+            const nodeX = p.x, nodeY = p.y;
+            const logoSrc = LOGO_IMAGES[p.id];
+            return (
+              <g key={p.id}>
+                {/* Node background */}
+                <rect
+                  x={nodeX - pw / 2} y={nodeY - ph / 2}
+                  width={pw} height={ph} rx={6}
+                  fill="var(--background)"
+                  stroke={isActive ? color : "var(--border)"}
+                  strokeWidth={isActive ? "1.5" : "1"}
                 />
-              )}
-              <circle
-                cx={p.x} cy={p.y} r={22}
-                fill="var(--background)"
-                stroke={isActive ? color : "var(--border)"}
-                strokeWidth={isActive ? "2.5" : "1.5"}
-                opacity={isActive ? 1 : 0.7}
-              />
-              {/* Colored dot */}
-              <circle cx={p.x} cy={p.y - 6} r={4} fill={color} opacity={isActive ? 1 : 0.4} />
-              <text x={p.x} y={p.y + 9} textAnchor="middle" fill="var(--foreground)" fontSize="8.5" fontFamily="inherit" opacity={isActive ? 1 : 0.6}>
-                {label}
-              </text>
-              {/* Request count badge */}
-              {count > 0 && (
-                <g>
-                  <circle cx={p.x + 17} cy={p.y - 17} r={9} fill={color} opacity="0.9" />
-                  <text x={p.x + 17} y={p.y - 13} textAnchor="middle" fill="#fff" fontSize="8" fontWeight="bold" fontFamily="inherit">
-                    {count > 99 ? "99+" : count}
-                  </text>
-                </g>
-              )}
-            </g>
-          );
-        })}
-      </svg>
+                {/* Logo image or fallback circle */}
+                {logoSrc ? (
+                  <image
+                    href={logoSrc}
+                    x={nodeX - pw / 2 + 4}
+                    y={nodeY - 12}
+                    width={24}
+                    height={24}
+                    opacity={isActive ? 1 : 0.5}
+                  />
+                ) : (
+                  <>
+                    <circle cx={nodeX - pw / 2 + 16} cy={nodeY} r={10} fill={color} opacity={isActive ? 1 : 0.5} />
+                    <text x={nodeX - pw / 2 + 16} y={nodeY + 4} textAnchor="middle" fill="#fff" fontSize="8" fontWeight="bold" fontFamily="inherit">
+                      {LOGO_LABELS[p.id]}
+                    </text>
+                  </>
+                )}
+                {/* Provider name */}
+                <text x={nodeX - pw / 2 + 32} y={nodeY + 4} textAnchor="start" fill="var(--foreground)" fontSize="10" fontFamily="inherit" fontWeight="500">
+                  {p.id.length > 12 ? p.id.slice(0, 11) + "…" : p.id}
+                </text>
+                {/* Quota badge */}
+                {quota.total > 0 && (
+                  <g>
+                    <rect x={nodeX + pw / 2 - 24} y={nodeY - 8} width={22} height={14} rx={4} fill={pct > 50 ? "#22c55e" : pct > 20 ? "#f59e0b" : "#ef4444"} opacity="0.9" />
+                    <text x={nodeX + pw / 2 - 13} y={nodeY + 2} textAnchor="middle" fill="#fff" fontSize="7" fontWeight="bold" fontFamily="inherit">
+                      {pct}%
+                    </text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+        </svg>
 
-      {/* Legend */}
-      <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
-        <span className="flex items-center gap-1.5">
-          <span className="block h-1.5 w-1.5 rounded-full bg-[var(--success)] opacity-80" />
-          Particle = active stream
-        </span>
-        <span>{logs.length} total requests</span>
+        {quotaProviders.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-[var(--muted-foreground)]">
+            No accounts with quota
+          </div>
+        )}
+      </div>
+
+      {/* Right: Recent Requests Table */}
+      <div className="md:w-[340px] w-80 rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden flex flex-col shrink-0" style={{ maxHeight: 400 }}>
+        <div className="px-4 py-2.5 border-b border-[var(--border)] shrink-0">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Recent Requests</h3>
+        </div>
+        {/* Table header */}
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)]/60 bg-[var(--background)]/50 shrink-0">
+          <span className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase flex-1">Model</span>
+          <span className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase w-28 text-right">In / Out</span>
+          <span className="text-[10px] font-medium text-[var(--muted-foreground)] uppercase w-16 text-right">When</span>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {recentRequests.map((req) => {
+            const elapsed = Date.now() - new Date(req.createdAt).getTime();
+            const timeAgo = elapsed < 60000 ? "just now"
+              : elapsed < 3600000 ? `${Math.floor(elapsed / 60000)}m ago`
+              : `${Math.floor(elapsed / 3600000)}h ago`;
+            return (
+              <div
+                key={req.id}
+                onClick={() => openDetail(req)}
+                className="flex items-center gap-2 px-4 py-1.5 border-b border-[var(--border)]/40 hover:bg-[var(--secondary)]/50 cursor-pointer min-w-0"
+              >
+                <span className="block h-1.5 w-1.5 rounded-full flex-shrink-0" style={{
+                  backgroundColor: req.status === "success" ? "var(--success)"
+                    : req.status === "streaming" ? "var(--warning)" : "var(--error)"
+                }} />
+                <span className="text-[11px] text-[var(--foreground)] flex-1 font-mono min-w-0" style={{ maxWidth: 140 }} title={req.model || ""}>
+                  {req.model ? (req.model.length > 16 ? req.model.slice(0, 16) + "…" : req.model) : "-"}
+                </span>
+                <span className="text-[10px] font-mono flex-shrink-0 text-right w-28" style={{ color: "var(--warning)" }}>
+                  {req.promptTokens ? (req.promptTokens >= 1000 ? `${(req.promptTokens / 1000).toFixed(1)}k` : req.promptTokens) : 0}
+                </span>
+                <span className="text-[9px] text-[var(--muted-foreground)] flex-shrink-0 text-center w-5">↑↓</span>
+                <span className="text-[10px] font-mono flex-shrink-0 text-right" style={{ color: "var(--success)" }}>
+                  {req.completionTokens ? (req.completionTokens >= 1000 ? `${(req.completionTokens / 1000).toFixed(1)}k` : req.completionTokens) : 0}
+                </span>
+                <span className="text-[10px] text-[var(--muted-foreground)] flex-shrink-0 w-16 text-right">{timeAgo}</span>
+              </div>
+            );
+          })}
+          {recentRequests.length === 0 && (
+            <div className="px-4 py-8 text-center text-xs text-[var(--muted-foreground)]">No requests yet</div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -248,7 +355,7 @@ function formatElapsed(ms: number): string {
 
 export default function Requests() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const viewMode = (searchParams.get("view") || "table") as "table" | "flow";
+  const viewMode = (searchParams.get("view") || "flow") as "table" | "flow";
 
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [search, setSearch] = useState("");
@@ -260,6 +367,24 @@ export default function Requests() {
   const perPage = 25;
   const [activeStreams, setActiveStreams] = useState<Map<number, ActiveStream>>(new Map());
   const [now, setNow] = useState<number>(Date.now());
+  const [accountQuotas, setAccountQuotas] = useState<Record<string, { total: number; remaining: number }>>({});
+
+  async function loadQuotas() {
+    try {
+      const res = await fetchAccounts() as { data: { id: number; provider: string; quotaLimit?: number; quotaRemaining?: number }[] };
+      const accounts = res?.data || [];
+      const quotas: Record<string, { total: number; remaining: number }> = {};
+      for (const a of accounts) {
+        const p = a.provider;
+        quotas[p] = quotas[p] || { total: 0, remaining: 0 };
+        quotas[p].total += a.quotaLimit || 0;
+        quotas[p].remaining += a.quotaRemaining || 0;
+      }
+      setAccountQuotas(quotas);
+    } catch {}
+  }
+
+  useEffect(() => { loadQuotas(); }, []);
 
   /**
    * Open the detail drawer for a row. The list endpoint omits the heavy
@@ -460,7 +585,7 @@ export default function Requests() {
       )}
 
       {viewMode === "flow" && (
-        <FlowView activeStreams={activeStreams} logs={logs} />
+        <FlowView activeStreams={activeStreams} logs={logs} openDetail={openDetail} accountQuotas={accountQuotas} />
       )}
 
       {viewMode === "table" && (

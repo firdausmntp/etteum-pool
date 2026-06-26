@@ -81,6 +81,7 @@ drizzle/
 
 # Debug artifacts
 *.png
+!dashboard/public/*.png
 
 # HAR network captures (may contain secrets)
 *.har
