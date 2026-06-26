@@ -314,7 +314,13 @@ function wrapStreamWithUsageFinalizer(
     finalized = true;
 
     const finalPromptTokens = promptTokens || context.fallbackPromptTokens;
-    const finalCompletionTokens = completionTokens || estimateTokensFromText(streamedContent) || context.fallbackCompletionTokens;
+    const estimatedFromContent = estimateTokensFromText(streamedContent);
+    let finalCompletionTokens = completionTokens || estimatedFromContent || context.fallbackCompletionTokens;
+    // Fallback: if still 0 but we have prompt tokens, estimate completion as ~80% of prompt
+    // (typical chat response ratio for coding assistants)
+    if (!finalCompletionTokens && finalPromptTokens > 0) {
+      finalCompletionTokens = Math.max(1, Math.round(finalPromptTokens * 0.8));
+    }
     const finalTotalTokens = totalTokens || finalPromptTokens + finalCompletionTokens || context.fallbackTotalTokens;
     const { creditsUsed, creditSource } = computeCredits(
       context.provider,

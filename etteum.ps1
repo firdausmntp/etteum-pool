@@ -140,7 +140,7 @@ function Invoke-Start {
   } else {
     Write-Host "Starting Etteum..."
   }
-  $BunExe = (Get-Command bun -ErrorAction SilentlyContinue).Source
+  $BunExe = (Get-Command bun.exe -ErrorAction SilentlyContinue).Source
   if (-not $BunExe) { $BunExe = "$env:USERPROFILE\.bun\bin\bun.exe" }
   # Start bun directly - NO -RedirectStandardOutput (it breaks Bun.spawn on Windows)
   $startArgs = @("scripts/production.ts", "--skip-build")

@@ -338,11 +338,15 @@ async function migrateModelPrefixes() {
 
     // 2. Migrate model_combos table
     const combos = await db.select().from(modelCombos);
+    // Collect combo names — these should NOT be prefixed
+    const comboNames = new Set(combos.map((c) => c.name));
     for (const combo of combos) {
       const models = combo.modelsJson as unknown as string[];
       if (Array.isArray(models)) {
         let changed = false;
         const newModels = models.map((m) => {
+          // Skip combo names — they're custom names, not provider models
+          if (comboNames.has(m)) return m;
           const newM = getPrefixedModelName(m);
           if (newM && newM !== m) {
             changed = true;
@@ -360,10 +364,15 @@ async function migrateModelPrefixes() {
       }
     }
 
-    // 3. Migrate request_logs table
+    // 3. Migrate request_logs table — skip combo names
     const uniqueLogModels = client.prepare("SELECT DISTINCT model FROM request_logs").all() as Array<{ model: string }>;
     for (const row of uniqueLogModels) {
       const oldModel = row.model;
+      // Skip combo names
+      if (comboNames.has(oldModel)) {
+        console.log(`[Migration] Skipping combo name in request_logs: ${oldModel}`);
+        continue;
+      }
       const newModel = getPrefixedModelName(oldModel);
       if (newModel && newModel !== oldModel) {
         client.prepare("UPDATE request_logs SET model = ? WHERE model = ?").run(newModel, oldModel);
@@ -371,14 +380,41 @@ async function migrateModelPrefixes() {
       }
     }
 
-    // 4. Migrate usage_summary table
+    // 4. Migrate usage_summary table — skip combo names
+    // Also fix any combo names that were incorrectly prefixed (e.g. kr/bahlil -> bahlil)
+    const comboPrefixes = Object.values(PROVIDER_PREFIXES);
+    for (const comboName of comboNames) {
+      for (const pfx of comboPrefixes) {
+        const prefixed = `${pfx}${comboName}`;
+        client.prepare("UPDATE request_logs SET model = ? WHERE model = ?").run(comboName, prefixed);
+        client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(comboName, prefixed);
+        client.prepare("UPDATE model_mappings SET target_model = ? WHERE target_model = ?").run(comboName, prefixed);
+      }
+    }
+
     const uniqueSummaryModels = client.prepare("SELECT DISTINCT model FROM usage_summary").all() as Array<{ model: string }>;
     for (const row of uniqueSummaryModels) {
       const oldModel = row.model;
+      // Skip combo names
+      if (comboNames.has(oldModel)) {
+        console.log(`[Migration] Skipping combo name in usage_summary: ${oldModel}`);
+        continue;
+      }
       const newModel = getPrefixedModelName(oldModel);
       if (newModel && newModel !== oldModel) {
-        client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(newModel, oldModel);
-        console.log(`[Migration] Migrated usage_summary model ${oldModel} -> ${newModel}`);
+        // Skip if already migrated or would cause UNIQUE constraint conflict
+        try {
+          const existing = client.prepare("SELECT COUNT(*) as cnt FROM usage_summary WHERE model = ?").get(newModel) as { cnt: number };
+          if (existing.cnt > 0) {
+            // Already has this model name, skip to avoid UNIQUE conflict
+            console.log(`[Migration] Skipping usage_summary model ${oldModel} -> ${newModel} (already exists)`);
+            continue;
+          }
+          client.prepare("UPDATE usage_summary SET model = ? WHERE model = ?").run(newModel, oldModel);
+          console.log(`[Migration] Migrated usage_summary model ${oldModel} -> ${newModel}`);
+        } catch (e: any) {
+          console.warn(`[Migration] Skipping usage_summary ${oldModel}: ${e.message}`);
+        }
       }
     }
 
