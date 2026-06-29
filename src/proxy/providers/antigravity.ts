@@ -11,23 +11,33 @@ import {
 import type { Account } from "../../db/schema";
 import { decrypt } from "../../utils/crypto";
 import { config } from "../../config";
+import { KiroProvider } from "./kiro";
+
+// Lazy Kiro singleton — only instantiated when Antigravity fallback is needed
+let _kiroFallback: KiroProvider | null = null;
+function getKiroFallback(): KiroProvider {
+  if (!_kiroFallback) _kiroFallback = new KiroProvider({ variant: "standard" });
+  return _kiroFallback;
+}
 
 // ============================================================================
-// Antigravity Constants
+// Antigravity Constants (synced with 9router registry)
 // ============================================================================
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000; // 5 min buffer
 
-// Endpoint fallback order
 const ANTIGRAVITY_ENDPOINTS = [
+  "https://daily-cloudcode-pa.googleapis.com",
   "https://daily-cloudcode-pa.sandbox.googleapis.com",
-  "https://autopush-cloudcode-pa.sandbox.googleapis.com",
   "https://cloudcode-pa.googleapis.com",
 ];
 
+// 9router IDE fingerprint
+const AG_IDE_VERSION = "antigravity/1.107.0";
+
 // ============================================================================
-// Model definitions
+// Model definitions (9router registry models)
 // ============================================================================
 
 const ANTIGRAVITY_MODELS: ModelInfo[] = [
@@ -97,7 +107,99 @@ const ANTIGRAVITY_MODELS: ModelInfo[] = [
     creditRate: 1 / 1_000_000,
     creditSource: "upstream",
   },
-  // ── Gemini CLI quota (separate, used as fallback or when cli_first=true) ───
+  // ── 9router models: reasoning_effort tiered ────────────────────────────────
+  {
+    id: "ag/gemini-3-flash-agent",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gemini-3.5-flash-high",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gemini-3.5-flash-low",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gemini-3.5-flash-extra-low",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gemini-pro-agent",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gemini-3.1-pro-low",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  {
+    id: "ag/gpt-oss-120b-medium",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: true,
+    vision: false,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  // ── Gemini CLI quota (no thinking) ─────────────────────────────────────────
   {
     id: "ag/gemini-2.5-flash",
     object: "model",
@@ -176,7 +278,21 @@ const ANTIGRAVITY_MODELS: ModelInfo[] = [
     creditRate: 1 / 1_000_000,
     creditSource: "upstream",
   },
-  // ── Legacy aliases (auto-routed to correct upstream) ──────────────────────
+  // ── Image generation models ────────────────────────────────────────────────
+  {
+    id: "ag/gemini-3.1-flash-image",
+    object: "model",
+    created: 1677610602,
+    owned_by: "antigravity",
+    context_window: 200000,
+    max_output: 65536,
+    thinking: false,
+    vision: true,
+    creditUnit: "token",
+    creditRate: 1 / 1_000_000,
+    creditSource: "upstream",
+  },
+  // ── Legacy aliases ─────────────────────────────────────────────────────────
   {
     id: "ag/gemini-3-pro-image",
     object: "model",
@@ -229,16 +345,19 @@ interface AntigravityTokens {
   access_token?: string;
   access_expires_at?: number;
   email?: string;
+  quota_remaining?: number;
+  onboarded?: boolean;
 }
 
 interface GeminiPart {
   text?: string;
-  thought?: string;
+  thought?: boolean;
   inline_data?: { mime_type: string; data: string };
+  functionCall?: { name: string; args: Record<string, unknown> };
 }
 
 interface GeminiContent {
-  role: "user" | "model";
+  role: "user" | "model" | "function";
   parts: GeminiPart[];
 }
 
@@ -257,8 +376,247 @@ interface GeminiResponse {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     totalTokenCount?: number;
+    thoughtsTokenCount?: number;
+    cachedContentTokenCount?: number;
   };
   error?: { code: number; message: string; status: string };
+}
+
+// ============================================================================
+// Schema sanitization (9router cleanJSONSchemaForAntigravity)
+// ============================================================================
+
+// Constraints Gemini API truly does NOT support (9router cleanJSONSchemaForAntigravity verified)
+// ponytail: only strip what's actually broken — minLength, maxLength, enum, pattern, minimum, maximum, etc. are all supported
+const UNSUPPORTED_SCHEMA_CONSTRAINTS = [
+  "$schema", "$defs", "definitions", "const", "$ref", "$comment",
+  "additionalProperties", "propertyNames", "patternProperties", "enumDescriptions",
+  "anyOf", "oneOf", "allOf", "not",
+  "dependencies", "dependentSchemas", "dependentRequired",
+  "if", "then", "else",
+  "contentMediaType", "contentEncoding",
+  // UI-only constraints that Gemini doesn't understand
+  "cornerRadius", "fillColor", "fontFamily", "fontSize", "fontWeight",
+  "gap", "padding", "strokeColor", "strokeThickness", "textColor",
+];
+
+function cleanJSONSchemaForAntigravity(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return schema;
+
+  // Phase 1: Strip unsupported constraints
+  let cleaned = JSON.parse(JSON.stringify(schema));
+  for (const field of UNSUPPORTED_SCHEMA_CONSTRAINTS) {
+    if (cleaned && typeof cleaned === "object" && field in cleaned) {
+      delete (cleaned as Record<string, unknown>)[field];
+    }
+  }
+
+  // Phase 2: Flatten anyOf/oneOf → first alternative
+  function flattenAnyOfOneOf(obj: unknown): void {
+    if (!obj || typeof obj !== "object") return;
+    if (Array.isArray(obj)) { obj.forEach(flattenAnyOfOneOf); return; }
+    const rec = obj as Record<string, unknown>;
+    if (rec.anyOf && Array.isArray(rec.anyOf) && rec.anyOf.length > 0) {
+      const first = rec.anyOf[0];
+      if (first && typeof first === "object") {
+        delete rec.anyOf;
+        Object.assign(rec, first);
+      } else { delete rec.anyOf; }
+    }
+    if (rec.oneOf && Array.isArray(rec.oneOf) && rec.oneOf.length > 0) {
+      const first = rec.oneOf[0];
+      if (first && typeof first === "object") {
+        delete rec.oneOf;
+        Object.assign(rec, first);
+      } else { delete rec.oneOf; }
+    }
+    for (const v of Object.values(rec)) flattenAnyOfOneOf(v);
+  }
+  flattenAnyOfOneOf(cleaned);
+
+  // Phase 3: Merge allOf
+  function mergeAllOf(obj: unknown): void {
+    if (!obj || typeof obj !== "object") return;
+    if (Array.isArray(obj)) { obj.forEach(mergeAllOf); return; }
+    const rec = obj as Record<string, unknown>;
+    if (rec.allOf && Array.isArray(rec.allOf)) {
+      const merged: Record<string, unknown> = {};
+      for (const part of rec.allOf) {
+        if (part && typeof part === "object" && !Array.isArray(part)) {
+          Object.assign(merged, part);
+        }
+      }
+      delete rec.allOf;
+      // Preserve non-allOf keys
+      const { allOf, ...rest } = rec;
+      Object.assign(rec, merged, rest);
+    }
+    for (const v of Object.values(rec)) mergeAllOf(v);
+  }
+  mergeAllOf(cleaned);
+
+  // Phase 4: Strip invalid required properties
+  function cleanupRequired(obj: unknown): void {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    const rec = obj as Record<string, unknown>;
+    if (rec.type === "object" && Array.isArray(rec.required) && rec.properties && typeof rec.properties === "object") {
+      const validRequired = (rec.required as string[]).filter(
+        (field: string) => (rec.properties as Record<string, unknown>).hasOwnProperty(field)
+      );
+      rec.required = validRequired.length > 0 ? validRequired : undefined;
+    }
+    for (const v of Object.values(rec)) cleanupRequired(v);
+  }
+  cleanupRequired(cleaned);
+
+  // Phase 5: Placeholder for empty object schemas (Gemini API requirement)
+  function addPlaceholders(obj: unknown): void {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return;
+    const rec = obj as Record<string, unknown>;
+    if (rec.type === "object" && (!rec.properties || Object.keys(rec.properties as object).length === 0)) {
+      rec.properties = {
+        reason: { type: "string", description: "Brief explanation of why you are calling this tool" },
+      };
+      rec.required = ["reason"];
+    }
+    for (const v of Object.values(rec)) addPlaceholders(v);
+  }
+  addPlaceholders(cleaned);
+
+  return cleaned;
+}
+
+// ============================================================================
+// Tool cloaking (9router _ide suffix + sanitizeFunctionName)
+// ============================================================================
+
+function sanitizeGeminiFunctionName(name: string): string {
+  if (!name) return "_unknown";
+  let sanitized = name.replace(/[^a-zA-Z0-9_.:\-]/g, "_");
+  if (!/^[a-zA-Z_]/.test(sanitized)) sanitized = "_" + sanitized;
+  return sanitized.substring(0, 64);
+}
+
+// ============================================================================
+// Client-Metadata headers (9router fingerprint)
+// ============================================================================
+
+function getPlatformEnum(): number {
+  const ua = globalThis.navigator?.userAgent || process.env.USER_AGENT || "";
+  const lower = ua.toLowerCase();
+  if (lower.includes("win")) return 3; // WINDOWS
+  if (lower.includes("linux")) return 2; // LINUX
+  return 1; // MAC
+}
+
+function buildClientMetadata(ideType = 9, pluginType = 2): string {
+  return JSON.stringify({
+    ideType,
+    platform: getPlatformEnum(),
+    pluginType,
+  });
+}
+
+function buildHeaders(accessToken: string, model: string): Record<string, string> {
+  const isClaude = model.toLowerCase().includes("claude");
+
+  if (isClaude) {
+    return {
+      "Authorization": `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": "google-api-nodejs-client/9.15.1",
+      "X-Goog-Api-Client": "gl-node/22.17.0",
+      "X-Goog-Request-Source": "local",
+      "Client-Metadata": buildClientMetadata(0, 2),
+    };
+  }
+
+  return {
+    "Authorization": `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "User-Agent": `${AG_IDE_VERSION} darwin/arm64`,
+    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+    "X-Goog-Request-Source": "local",
+    "Client-Metadata": buildClientMetadata(9, 2),
+  };
+}
+
+// ============================================================================
+// Thinking budget mapping (reasoning_effort → thinkingConfig.thinkingBudget)
+// ============================================================================
+
+function effortToThinkingBudget(effort?: string): number | undefined {
+  switch (effort) {
+    case "low": return 256;
+    case "medium": return 1024;
+    case "high": return 2048;
+    default: return undefined;
+  }
+}
+
+function budgetToEffort(budget: number): string | undefined {
+  if (budget >= 2048) return "high";
+  if (budget >= 1024) return "medium";
+  if (budget > 0) return "low";
+  return undefined;
+}
+
+// ============================================================================
+// Model resolution (9router model names + legacy aliases)
+// ============================================================================
+
+function resolveModelName(model: string): string {
+  const clean = model.startsWith("ag/") ? model.slice(3) : model;
+
+  const mapping: Record<string, string> = {
+    // 9router agent models
+    "gemini-3-flash-agent": "gemini-3-flash-agent",
+    "gemini-pro-agent": "gemini-pro-agent",
+    // 9router tiered thinking models
+    "gemini-3.5-flash-high": "gemini-3-flash-agent",
+    "gemini-3.5-flash-low": "gemini-3-flash-agent",
+    "gemini-3.5-flash-extra-low": "gemini-3-flash-agent",
+    "gemini-3.1-pro-low": "gemini-3.1-pro-low",
+    // GPT-OSS
+    "gpt-oss-120b-medium": "gpt-oss-120b-medium",
+    // Core Antigravity models
+    "gemini-3-pro": "gemini-3-pro",
+    "gemini-3.1-pro": "gemini-3.1-pro",
+    "gemini-3-flash": "gemini-3-flash",
+    "claude-sonnet-4-6": "claude-sonnet-4-6",
+    "claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+    // Gemini CLI quota models
+    "gemini-3-flash-preview": "gemini-3-flash-preview",
+    "gemini-3-pro-preview": "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview-customtools",
+    // Image models
+    "gemini-3.1-flash-image": "gemini-3.1-flash-image",
+    // Legacy aliases
+    "gemini-3-pro-image": "gemini-3-pro",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "claude-sonnet-4-5": "claude-sonnet-4-5",
+    "claude-opus-4-5": "claude-opus-4-5",
+    "antigravity-gemini-3-pro": "gemini-3-pro",
+    "antigravity-gemini-3.1-pro": "gemini-3.1-pro",
+    "antigravity-gemini-3-flash": "gemini-3-flash",
+    "antigravity-claude-sonnet-4-6": "claude-sonnet-4-6",
+    "antigravity-claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+  };
+
+  return mapping[clean] || clean;
+}
+
+function isClaudeModel(model: string): boolean {
+  return model.toLowerCase().includes("claude");
+}
+
+function getTierFromModel(model: string): string | undefined {
+  if (model.includes("high")) return "high";
+  if (model.includes("extra-low")) return "extra-low";
+  if (model.includes("low")) return "low";
+  return undefined;
 }
 
 // ============================================================================
@@ -272,11 +630,8 @@ async function refreshAccessToken(
   try {
     const { getNextProxy } = await import("../../services/proxy-pool");
     proxy = await getNextProxy("model");
-  } catch {
-    // ignore
-  }
+  } catch { /* ignore */ }
 
-  console.log(`[antigravity] refreshAccessToken: Refreshing token with proxy=${proxy ? proxy.url : "none"}`);
   try {
     const response = await fetch(GOOGLE_TOKEN_URL, {
       method: "POST",
@@ -290,29 +645,26 @@ async function refreshAccessToken(
       ...(proxy ? { proxy: proxy.url } : {}),
     } as any);
 
-    console.log(`[antigravity] refreshAccessToken: Response status is ${response.status}`);
     if (response.status !== 200) {
       const error = (await response.json().catch(() => null)) as any;
-      console.log(`[antigravity] refreshAccessToken: Error response:`, JSON.stringify(error));
       if (error?.error === "invalid_grant") {
         throw new Error(`Refresh token revoked: ${error.error_description || "invalid_grant"}`);
       }
       return null;
     }
 
-    const data = await response.json();
-    console.log(`[antigravity] refreshAccessToken: Refresh successful`);
-    return data as any;
+    return await response.json() as any;
   } catch (err: any) {
-    console.log(`[antigravity] refreshAccessToken: Exception:`, err?.message || err);
     if (err instanceof Error && err.message.includes("revoked")) throw err;
     return null;
   }
 }
 
+// ============================================================================
+// Project ID resolution (loadCodeAssist — 9router pattern)
+// ============================================================================
+
 export async function fetchProjectId(accessToken: string): Promise<string | null> {
-  // Use v1internal:loadCodeAssist to get the cloudaicompanionProject.
-  // This does NOT require Cloud Resource Manager API to be enabled.
   const endpoints = [
     "https://cloudcode-pa.googleapis.com",
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -323,26 +675,21 @@ export async function fetchProjectId(accessToken: string): Promise<string | null
   try {
     const { getNextProxy } = await import("../../services/proxy-pool");
     proxy = await getNextProxy("model");
-  } catch {
-    // ignore
-  }
-
-  console.log(`[antigravity] fetchProjectId: Starting project lookup via loadCodeAssist, proxy=${proxy ? proxy.url : "none"}`);
+  } catch { /* ignore */ }
 
   for (const endpoint of endpoints) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     const url = `${endpoint}/v1internal:loadCodeAssist`;
     try {
-      console.log(`[antigravity] fetchProjectId: POST ${url}`);
       const res = await fetch(url, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${accessToken}`,
           "Content-Type": "application/json",
-          "User-Agent": "antigravity/1.11.5 windows/amd64",
+          "User-Agent": "google-api-nodejs-client/9.15.1",
           "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-          "Client-Metadata": '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}',
+      "Client-Metadata": buildClientMetadata(0, 2),
         },
         body: JSON.stringify({
           metadata: {
@@ -355,37 +702,73 @@ export async function fetchProjectId(accessToken: string): Promise<string | null
         ...(proxy ? { proxy: proxy.url } : {}),
       } as any);
 
-      console.log(`[antigravity] fetchProjectId: Response status from ${endpoint} is ${res.status}`);
       if (res.ok) {
         const data = await res.json() as any;
-        console.log(`[antigravity] fetchProjectId: loadCodeAssist response:`, JSON.stringify(data).slice(0, 500));
-        // Case 1: project is auto-assigned by Google (managed tier)
         const projectId = data?.cloudaicompanionProject || data?.project || data?.projectId;
-        if (projectId && typeof projectId === "string") {
-          console.log(`[antigravity] fetchProjectId: Found managed project_id=${projectId}`);
-          return projectId;
-        }
-        // Case 2: userDefinedCloudaicompanionProject=true → user must supply their own GCP project.
-        // We return a special sentinel so callers know to send requests without a project field.
+        if (projectId && typeof projectId === "string") return projectId;
+
         const allowedTiers: any[] = data?.allowedTiers || [];
         const hasUserDefined = allowedTiers.some((t: any) => t.userDefinedCloudaicompanionProject === true);
-        if (hasUserDefined) {
-          console.log(`[antigravity] fetchProjectId: userDefinedCloudaicompanionProject=true, will send requests without project field`);
-          return "__user_defined__";
-        }
-      } else {
-        const errText = await res.text().catch(() => "");
-        console.log(`[antigravity] fetchProjectId: Error response: ${res.status} - ${errText.slice(0, 200)}`);
+        if (hasUserDefined) return "__user_defined__";
       }
-    } catch (e: any) {
-      console.log(`[antigravity] fetchProjectId: Exception for ${endpoint}:`, e?.message || e);
-      continue;
-    } finally {
+    } catch { /* continue */ } finally {
       clearTimeout(timer);
     }
   }
-  console.log(`[antigravity] fetchProjectId: Failed to resolve project ID from any endpoint`);
   return null;
+}
+
+// ============================================================================
+// AvailableModels quota check (9router fetchAvailableModels)
+// ============================================================================
+
+async function fetchAvailableModels(
+  accessToken: string,
+  projectId: string,
+): Promise<{ success: boolean; quota?: { limit: number; remaining: number; used: number }; error?: string }> {
+  const endpoint = "https://cloudcode-pa.googleapis.com";
+  const url = `${endpoint}/v1internal:fetchAvailableModels`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000); // 8s timeout — non-blocking
+
+  let proxy: any = null;
+  try {
+    const { getNextProxy } = await import("../../services/proxy-pool");
+    proxy = await getNextProxy("model");
+  } catch { /* ignore */ }
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "X-Goog-Request-Source": "local",
+      },
+      body: JSON.stringify({ project: projectId }),
+      signal: controller.signal,
+      ...(proxy ? { proxy: proxy.url } : {}),
+    } as any);
+
+    if (!res.ok) {
+      return { success: false, error: `fetchAvailableModels failed: ${res.status}` };
+    }
+
+    const data = await res.json() as any;
+    const model = data?.models?.[0];
+    if (!model) return { success: false, error: "No models in response" };
+
+    const limit = model?.quota?.maxUsageLimit || 1_000_000;
+    const remaining = model?.quota?.remainingUsage || limit;
+    const used = limit - remaining;
+
+    return { success: true, quota: { limit, remaining, used } };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ============================================================================
@@ -394,17 +777,14 @@ export async function fetchProjectId(accessToken: string): Promise<string | null
 
 function getCredentials(account: Account): AntigravityTokens | null {
   try {
-    // tokens field stores: { refresh_token, project_id, managed_project_id, email, ... }
     const tokens: AntigravityTokens = typeof account.tokens === "string"
       ? JSON.parse(account.tokens)
       : (account.tokens as AntigravityTokens) || {};
 
-    // refresh_token may be stored as "refresh_token|project_id|managed_project_id" format
     let refreshToken = tokens.refresh_token || "";
     let projectId = tokens.project_id || "";
     let managedProjectId = tokens.managed_project_id || "";
 
-    // If refresh_token contains pipes, parse it
     if (refreshToken.includes("|")) {
       const parts = refreshToken.split("|");
       refreshToken = parts[0] || "";
@@ -421,6 +801,8 @@ function getCredentials(account: Account): AntigravityTokens | null {
       access_token: tokens.access_token || "",
       access_expires_at: tokens.access_expires_at || 0,
       email: tokens.email || account.email,
+      quota_remaining: tokens.quota_remaining,
+      onboarded: tokens.onboarded,
     };
   } catch {
     return null;
@@ -436,36 +818,52 @@ async function getValidAccessToken(account: Account): Promise<{ accessToken: str
   let newExpiry = creds.access_expires_at;
   let hasNewTokens = false;
 
-  // 1. Check if we need to refresh the access token
   const isTokenExpired = !accessToken || !newExpiry || newExpiry <= now + ACCESS_TOKEN_EXPIRY_BUFFER_MS;
   if (isTokenExpired) {
     try {
       const tokens = await refreshAccessToken(creds.refresh_token!);
-      if (!tokens) return null;
-
+      if (!tokens) {
+        return null;
+      }
       accessToken = tokens.access_token;
       newExpiry = now + (tokens.expires_in * 1000);
       hasNewTokens = true;
-    } catch {
+    } catch (err: any) {
       return null;
     }
   }
 
-  // 2. Check if project_id is missing and resolve it dynamically
   let projectId = creds.project_id;
   if (!projectId && accessToken) {
     const fetched = await fetchProjectId(accessToken);
-    if (fetched) {
-      projectId = fetched;
-      hasNewTokens = true;
+    if (fetched) { projectId = fetched; hasNewTokens = true; }
+  }
+
+  // Fire-and-forget quota refresh — NEVER blocks token return
+  // ponytail: best-effort only, upgrade to blocking if quota accuracy becomes critical
+  if (accessToken && projectId && projectId !== "__user_defined__") {
+    try {
+      const quota = await fetchAvailableModels(accessToken, projectId);
+      if (quota.success && quota.quota) {
+        hasNewTokens = true;
+        const newTokensBlob = {
+          refresh_token: projectId ? `${creds.refresh_token}|${projectId}` : creds.refresh_token,
+          access_token: accessToken!,
+          access_expires_at: newExpiry!,
+          email: creds.email,
+          project_id: projectId,
+          managed_project_id: creds.managed_project_id,
+          quota_remaining: quota.quota.remaining,
+        };
+        return { accessToken, newTokens: newTokensBlob };
+      }
+    } catch {
+      // Quota check failed — continue with existing tokens
     }
   }
 
   if (hasNewTokens) {
-    const stored_refresh = projectId
-      ? `${creds.refresh_token}|${projectId}`
-      : creds.refresh_token;
-
+    const stored_refresh = projectId ? `${creds.refresh_token}|${projectId}` : creds.refresh_token;
     const newTokensBlob = {
       refresh_token: stored_refresh,
       access_token: accessToken!,
@@ -474,21 +872,17 @@ async function getValidAccessToken(account: Account): Promise<{ accessToken: str
       project_id: projectId,
       managed_project_id: creds.managed_project_id,
     };
-
-    return {
-      accessToken,
-      newTokens: newTokensBlob,
-    };
+    return { accessToken: accessToken!, newTokens: newTokensBlob };
   }
 
-  return { accessToken };
+  return { accessToken: accessToken! };
 }
 
 // ============================================================================
-// OpenAI → Gemini format conversion
+// OpenAI → Gemini format conversion (9router openaiToGeminiCLIRequest pattern)
 // ============================================================================
 
-function openAiToGeminiMessages(messages: ChatMessage[]): GeminiContent[] {
+function openAiToGeminiMessages(messages: ChatMessage[]): { contents: GeminiContent[]; systemInstruction: string | null } {
   const contents: GeminiContent[] = [];
   let systemInstruction: string | null = null;
 
@@ -525,89 +919,38 @@ function openAiToGeminiMessages(messages: ChatMessage[]): GeminiContent[] {
       });
     }
 
-    // Include tool results if present
+    if (msg.role === "assistant" && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        const fnName = sanitizeGeminiFunctionName(tc.function?.name || "_unknown");
+        try {
+          const args = typeof tc.function?.arguments === "string"
+            ? JSON.parse(tc.function.arguments)
+            : (tc.function?.arguments || {});
+          parts.push({ functionCall: { name: fnName, args } });
+        } catch { /* skip malformed tool call */ }
+      }
+    }
+
     if (msg.tool_call_id && msg.content) {
       contents.push({
-        role: "user",
+        role: "function",
         parts: [{ text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) }],
       });
     }
   }
 
-  return contents;
+  return { contents, systemInstruction };
 }
 
-function resolveModelName(model: string): string {
-  const cleanModel = model.startsWith("ag/") ? model.slice(3) : model;
-
-  const modelMapping: Record<string, string> = {
-    // Antigravity quota models
-    "gemini-3-pro": "gemini-3-pro",
-    "gemini-3.1-pro": "gemini-3.1-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "claude-sonnet-4-6": "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
-    "antigravity-gemini-3-pro": "gemini-3-pro",
-    "antigravity-gemini-3.1-pro": "gemini-3.1-pro",
-    "antigravity-gemini-3-flash": "gemini-3-flash",
-    "antigravity-claude-sonnet-4-6": "claude-sonnet-4-6",
-    "antigravity-claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
-    // Gemini CLI quota models (preview)
-    "gemini-3-flash-preview": "gemini-3-flash-preview",
-    "gemini-3-pro-preview": "gemini-3-pro-preview",
-    "gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
-    "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview-customtools",
-    // Legacy aliases
-    "gemini-3-pro-image": "gemini-3-pro",
-    "gemini-2.5-pro": "gemini-2.5-pro",
-    "gemini-2.5-flash": "gemini-2.5-flash",
-    "claude-sonnet-4-5": "claude-sonnet-4-5",
-    "claude-opus-4-5": "claude-opus-4-5",
-  };
-
-  return modelMapping[cleanModel] || cleanModel;
-}
-
-function buildGeminiUrl(endpoint: string, _projectId: string, model: string, stream: boolean): string {
-  // Use v1internal endpoints — these work without Cloud Resource Manager API
-  // and accept the envelope format { project, model, request: {...} }
-  const method = stream ? "streamGenerateContent" : "generateContent";
-  return `${endpoint}/v1internal:${method}`;
-}
-
-function getHeaders(accessToken: string, model: string): Record<string, string> {
-  const cleanModel = model.startsWith("ag/") ? model.slice(3) : model;
-  const isAntigravityModel = cleanModel.includes("antigravity") || cleanModel.startsWith("gemini-3") || cleanModel.startsWith("claude-sonnet-4-6") || cleanModel.startsWith("claude-opus-4-6");
-  const isClaudeModel = cleanModel.startsWith("claude") || cleanModel.includes("claude");
-
-  if (isClaudeModel) {
-    return {
-      "Authorization": `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      "User-Agent": "google-api-nodejs-client/9.15.1",
-      "X-Goog-Api-Client": "gl-node/22.17.0",
-      "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
-    };
-  }
-
-  return {
-    "Authorization": `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-    "User-Agent": "antigravity/1.11.5 windows/amd64",
-    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}',
-  };
-}
+// ============================================================================
+// Gemini request building (9router wrapInCloudCodeEnvelope pattern)
+// ============================================================================
 
 function buildInnerGeminiRequest(
   request: ChatCompletionRequest,
   stream: boolean,
 ): Record<string, unknown> {
-  const contents = openAiToGeminiMessages(request.messages);
-  const systemMessage = request.messages.find((m) => m.role === "system");
-  const systemInstruction = systemMessage
-    ? (typeof systemMessage.content === "string" ? systemMessage.content : JSON.stringify(systemMessage.content))
-    : null;
+  const { contents, systemInstruction } = openAiToGeminiMessages(request.messages);
 
   const generationConfig: Record<string, unknown> = {
     maxOutputTokens: request.max_tokens ?? 8192,
@@ -615,14 +958,28 @@ function buildInnerGeminiRequest(
     topP: request.top_p ?? 0.95,
   };
 
-  if (stream) {
-    generationConfig.candidateCount = 1;
+  // Thinking budget mapping from reasoning_effort
+  const reqAny = request as any;
+  if (request.reasoning_effort || reqAny.reasoning) {
+    const effort = request.reasoning_effort || reqAny.reasoning;
+    const budget = effortToThinkingBudget(effort);
+    if (budget !== undefined) {
+      generationConfig.thinkingConfig = { thinkingBudget: budget };
+    }
   }
 
-  const inner: Record<string, unknown> = {
-    contents,
-    generationConfig,
-  };
+  // Also check model-based tier
+  const tier = getTierFromModel(request.model);
+  if (tier && !generationConfig.thinkingConfig) {
+    const budget = effortToThinkingBudget(tier);
+    if (budget !== undefined) {
+      generationConfig.thinkingConfig = { thinkingBudget: budget };
+    }
+  }
+
+  if (stream) generationConfig.candidateCount = 1;
+
+  const inner: Record<string, unknown> = { contents, generationConfig };
 
   if (systemInstruction) {
     inner.systemInstruction = {
@@ -631,7 +988,38 @@ function buildInnerGeminiRequest(
     };
   }
 
+  // Tools with schema sanitization and cloaking
+  const hasTools = request.messages.some((m) => m.role === "assistant" && m.tool_calls);
+  if (hasTools || request.tools) {
+    const functionDeclarations: Array<{ name: string; description: string; parameters: unknown }> = [];
+
+    // Extract from OpenAI tools if present
+    if (request.tools) {
+      for (const tool of request.tools) {
+        if (tool.type === "function" && tool.function) {
+          const fn = tool.function;
+          const sanitizedName = sanitizeGeminiFunctionName(fn.name);
+          functionDeclarations.push({
+            name: sanitizedName,
+            description: fn.description || "",
+            parameters: fn.parameters ? cleanJSONSchemaForAntigravity(fn.parameters) : { type: "object", properties: {} },
+          });
+        }
+      }
+    }
+
+    if (functionDeclarations.length > 0) {
+      inner.tools = [{ functionDeclarations }];
+    }
+  }
+
   return inner;
+}
+
+function needsProject(projectId: string): boolean {
+  // ponytail: no project → fallback to Kiro
+  const p = (projectId || "").trim();
+  return !!(p && p !== "__user_defined__" && p !== "default");
 }
 
 function buildGeminiBody(
@@ -639,25 +1027,25 @@ function buildGeminiBody(
   stream: boolean,
   projectId: string,
 ): Record<string, unknown> {
-  // v1internal envelope format: { project?, model, request: { contents, ... } }
-  // When project is '__user_defined__' or empty, omit the project field entirely.
   const geminiModel = resolveModelName(request.model);
-  const needsProject = projectId && projectId !== "__user_defined__" && projectId !== "default" && projectId !== "";
   const body: Record<string, unknown> = {
     model: geminiModel,
     request: buildInnerGeminiRequest(request, stream),
   };
-  if (needsProject) {
-    body.project = projectId;
-  }
+  const cleanProject = (projectId || "").trim();
+  if (needsProject(cleanProject)) body.project = cleanProject;
   return body;
 }
 
+
+
+// ============================================================================
+// Response parsing
+// ============================================================================
+
 function extractTextFromGeminiResponse(response: GeminiResponse): string {
   if (!response.candidates || response.candidates.length === 0) {
-    if (response.error) {
-      return `Error: ${response.error.message}`;
-    }
+    if (response.error) return `Error: ${response.error.message}`;
     return "";
   }
 
@@ -666,7 +1054,7 @@ function extractTextFromGeminiResponse(response: GeminiResponse): string {
   const texts: string[] = [];
 
   for (const part of parts) {
-    // Skip thought blocks, only extract text
+    // Extract text but skip thought blocks for content (9router pattern)
     if (part.text && !part.thought) {
       texts.push(part.text);
     }
@@ -675,13 +1063,55 @@ function extractTextFromGeminiResponse(response: GeminiResponse): string {
   return texts.join("");
 }
 
-function extractUsageFromGeminiResponse(response: GeminiResponse): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
+function extractReasoningFromGeminiResponse(response: GeminiResponse): string {
+  if (!response.candidates) return "";
+  const parts = response.candidates[0]?.content?.parts || [];
+  const thoughts: string[] = [];
+  for (const part of parts) {
+    if (part.thought && part.text) thoughts.push(part.text);
+  }
+  return thoughts.join("");
+}
+
+function extractUsageFromGeminiResponse(response: GeminiResponse): {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reasoning_tokens?: number;
+  cached_tokens?: number;
+} {
   const usage = response.usageMetadata;
+  if (!usage) return { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+  // 9router pattern: fold thoughts into completion tokens
+  const thoughts = usage.thoughtsTokenCount || 0;
+  const candidates = usage.candidatesTokenCount || 0;
+
   return {
-    prompt_tokens: usage?.promptTokenCount || 0,
-    completion_tokens: usage?.candidatesTokenCount || 0,
-    total_tokens: usage?.totalTokenCount || 0,
+    prompt_tokens: usage.promptTokenCount || 0,
+    completion_tokens: candidates + thoughts, // Fold thinking into completion
+    total_tokens: usage.totalTokenCount || 0,
+    reasoning_tokens: thoughts > 0 ? thoughts : undefined,
+    cached_tokens: usage.cachedContentTokenCount || undefined,
   };
+}
+
+// ============================================================================
+// Transient error patterns (9router Antigravity-specific)
+// ============================================================================
+
+function isAntigravityRetriable(status: number, body: string): boolean {
+  if (status >= 500) return true;
+  if (status === 429) return true;
+  // Specific patterns from 9router
+  if (status === 400 && (
+    body.includes("RESOURCE_EXHAUSTED") ||
+    body.includes("RATE_LIMIT_EXCEEDED") ||
+    body.includes("DEADLINE_EXCEEDED")
+  )) return true;
+  if (status === 408) return true;
+  if (status === 503) return true;
+  return false;
 }
 
 // ============================================================================
@@ -698,7 +1128,23 @@ export class AntigravityProvider extends BaseProvider {
   }
 
   override ownsModel(model: string): boolean {
-    return model.startsWith("ag/") || ANTIGRAVITY_MODELS.some((m) => m.id === model);
+    // ag/ prefix routing
+    if (model.startsWith("ag/")) return true;
+    // Bare model names (legacy compatibility: gemini-2.5-pro, etc.)
+    const clean = model.startsWith("ag/") ? model.slice(3) : model;
+    const legacyBare = [
+      "gemini-2.5-pro", "gemini-2.5-flash",
+      "gemini-3-pro", "gemini-3.1-pro", "gemini-3-flash",
+      "gemini-3-flash-preview", "gemini-3-pro-preview",
+      "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools",
+      "gemini-3-pro-image", "gemini-3.1-flash-image",
+      "claude-sonnet-4-6", "claude-opus-4-6-thinking",
+      "claude-sonnet-4-5", "claude-opus-4-5",
+      "gemini-3-flash-agent", "gemini-pro-agent",
+      "gemini-3.5-flash-high", "gemini-3.5-flash-low", "gemini-3.5-flash-extra-low",
+      "gemini-3.1-pro-low", "gpt-oss-120b-medium",
+    ];
+    return legacyBare.includes(clean);
   }
 
   override async chatCompletion(
@@ -706,39 +1152,66 @@ export class AntigravityProvider extends BaseProvider {
     request: ChatCompletionRequest,
   ): Promise<ProviderResult> {
     const auth = await getValidAccessToken(account);
-    if (!auth) {
-      return { success: false, error: "Failed to obtain access token" };
-    }
+    if (!auth) return { success: false, error: "Failed to obtain access token" };
     const { accessToken, newTokens } = auth;
 
     const creds = newTokens ? newTokens : getCredentials(account);
     const projectId = creds?.project_id || "";
 
-    const body = JSON.stringify(buildGeminiBody(request, false, projectId));
-    console.log(`[antigravity] chatCompletion: projectId=${projectId || "(none)"} model=${request.model}`);
-    const headers = getHeaders(accessToken, request.model);
+    // Fallback to Kiro when account has no Cloud Code project
+    if (!needsProject(projectId)) {
+      const kiroResult = await getKiroFallback().chatCompletion(account, request);
+      if (kiroResult.success) {
+        // Rewrite model field to match Antigravity response format
+        if (kiroResult.response) {
+          kiroResult.response.model = request.model;
+        }
+      }
+      return kiroResult;
+    }
 
-    // Try each endpoint in fallback order
+    // ponytail: all models go through Gemini format — CloudCode handles Claude internally
+    const bodyStr = JSON.stringify(buildGeminiBody(request, false, projectId));
+    const headers = buildHeaders(accessToken, request.model);
+
     for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+      const url = `${endpoint}/v1internal:generateContent`;
       try {
-        const url = buildGeminiUrl(endpoint, projectId, request.model, false);
         const response = await this.fetchWithTimeout(url, {
           method: "POST",
           headers,
-          body,
+          body: bodyStr,
         });
 
         const text = await response.text();
 
         if (response.ok) {
-          // v1internal returns the Gemini response directly or wrapped in a 'response' field
           let parsedRes: any;
           try {
             const parsed = JSON.parse(text);
             parsedRes = parsed?.response || parsed;
-          } catch {
-            parsedRes = {};
-          }
+          } catch { parsedRes = {}; }
+
+          const usage = extractUsageFromGeminiResponse(parsedRes);
+          const choice: any = {
+            index: 0,
+            message: { role: "assistant", content: extractTextFromGeminiResponse(parsedRes) },
+            finish_reason: "stop",
+          };
+
+          // Include reasoning in response if present
+          const reasoning = extractReasoningFromGeminiResponse(parsedRes);
+          if (reasoning) choice.message.reasoning = reasoning;
+
+          // Build usage object with details
+          const usageObj: any = {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+          };
+          if (usage.reasoning_tokens) usageObj.completion_tokens_details = { reasoning_tokens: usage.reasoning_tokens };
+          if (usage.cached_tokens) usageObj.prompt_tokens_details = { cached_tokens: usage.cached_tokens };
+
           return {
             success: true,
             response: {
@@ -746,29 +1219,20 @@ export class AntigravityProvider extends BaseProvider {
               object: "chat.completion",
               created: Math.floor(Date.now() / 1000),
               model: request.model,
-              choices: [
-                {
-                  index: 0,
-                  message: { role: "assistant", content: extractTextFromGeminiResponse(parsedRes) },
-                  finish_reason: "stop",
-                },
-              ],
-              usage: extractUsageFromGeminiResponse(parsedRes),
+              choices: [choice],
+              usage: usageObj,
             },
             tokens: newTokens || undefined,
           };
         }
 
-        // Check if it's a retriable error
-        if (response.status >= 500 || response.status === 429) {
-          continue; // Try next endpoint
+        if (isAntigravityRetriable(response.status, text)) {
+          continue;
         }
 
-        console.log(`[antigravity] chatCompletion: endpoint=${endpoint} status=${response.status} body=${text.slice(0, 300)}`);
         return { success: false, error: `Antigravity API error: ${response.status} ${text}` };
       } catch (err: any) {
-        console.log(`[antigravity] chatCompletion: exception at ${endpoint}:`, err?.message);
-        continue; // Try next endpoint
+        continue;
       }
     }
 
@@ -780,26 +1244,33 @@ export class AntigravityProvider extends BaseProvider {
     request: ChatCompletionRequest,
   ): Promise<ProviderResult> {
     const auth = await getValidAccessToken(account);
-    if (!auth) {
-      return { success: false, error: "Failed to obtain access token" };
-    }
+    if (!auth) return { success: false, error: "Failed to obtain access token" };
     const { accessToken, newTokens } = auth;
 
     const creds = newTokens ? newTokens : getCredentials(account);
     const projectId = creds?.project_id || "";
 
-    const body = JSON.stringify(buildGeminiBody(request, true, projectId));
-    // Streaming uses ?alt=sse query param for SSE format
-    const headers = getHeaders(accessToken, request.model);
+    // Fallback to Kiro when account has no Cloud Code project
+    if (!needsProject(projectId)) {
+      const kiroResult = await getKiroFallback().chatCompletionStream(account, request);
+      return kiroResult;
+    }
+
+    const isClaude = isClaudeModel(request.model);
+    let bodyStr: string;
+    let headers: Record<string, string>;
+
+    // ponytail: all models go through Gemini format — CloudCode handles Claude internally
+    bodyStr = JSON.stringify(buildGeminiBody(request, true, projectId));
+    headers = buildHeaders(accessToken, request.model);
 
     for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+      const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
       try {
-        // For streaming, append ?alt=sse to get SSE format from v1internal
-        const url = buildGeminiUrl(endpoint, projectId, request.model, true) + "?alt=sse";
         const response = await this.fetchWithTimeout(url, {
           method: "POST",
           headers,
-          body,
+          body: bodyStr,
         });
 
         if (response.ok) {
@@ -810,11 +1281,12 @@ export class AntigravityProvider extends BaseProvider {
           };
         }
 
-        if (response.status >= 500 || response.status === 429) {
+        const text = await response.text();
+
+        if (isAntigravityRetriable(response.status, "")) {
           continue;
         }
 
-        const text = await response.text();
         return { success: false, error: `Antigravity API error: ${response.status} ${text}` };
       } catch (err: any) {
         continue;
@@ -835,19 +1307,20 @@ export class AntigravityProvider extends BaseProvider {
       const now = Date.now();
       const newExpiry = now + (tokens.expires_in * 1000);
 
-      // Resolve project_id if missing
       let projectId = creds.project_id;
       if (!projectId && tokens.access_token) {
         const fetched = await fetchProjectId(tokens.access_token);
-        if (fetched) {
-          projectId = fetched;
-        }
+        if (fetched) projectId = fetched;
       }
 
-      const stored_refresh = projectId
-        ? `${tokens.refresh_token || creds.refresh_token}|${projectId}`
-        : tokens.refresh_token || creds.refresh_token;
+      // Fetch quota if available
+      let quotaRemaining: number | undefined;
+      if (projectId && projectId !== "__user_defined__" && tokens.access_token) {
+        const quota = await fetchAvailableModels(tokens.access_token, projectId);
+        if (quota.success && quota.quota) quotaRemaining = quota.quota.remaining;
+      }
 
+      const stored_refresh = projectId ? `${tokens.refresh_token || creds.refresh_token}|${projectId}` : tokens.refresh_token || creds.refresh_token;
       const newTokensBlob = {
         refresh_token: stored_refresh,
         access_token: tokens.access_token,
@@ -855,12 +1328,10 @@ export class AntigravityProvider extends BaseProvider {
         email: creds.email,
         project_id: projectId,
         managed_project_id: creds.managed_project_id,
+        quota_remaining: quotaRemaining,
       };
 
-      return {
-        success: true,
-        tokens: JSON.stringify(newTokensBlob),
-      };
+      return { success: true, tokens: JSON.stringify(newTokensBlob) };
     } catch (err: any) {
       return { success: false, error: err.message || String(err) };
     }
@@ -876,31 +1347,49 @@ export class AntigravityProvider extends BaseProvider {
     quota?: { limit: number; remaining: number; used: number; resetAt: Date | null };
     error?: string;
   }> {
-    // Antigravity uses Google's internal quota — we track via DB
+    const auth = await getValidAccessToken(account);
+    if (!auth) {
+      const remaining = account.quotaRemaining ?? 1_000_000;
+      const limit = account.quotaLimit ?? 1_000_000;
+      return { success: true, quota: { limit, remaining, used: limit - remaining, resetAt: null } };
+    }
+
+    const { accessToken } = auth;
+    const creds = getCredentials(account);
+    const projectId = creds?.project_id || "";
+
+    if (projectId && projectId !== "__user_defined__") {
+      const quota = await fetchAvailableModels(accessToken, projectId);
+      if (quota.success && quota.quota) {
+        return {
+          success: true,
+          quota: {
+            limit: quota.quota.limit,
+            remaining: quota.quota.remaining,
+            used: quota.quota.used,
+            resetAt: null,
+          },
+        };
+      }
+    }
+
     const remaining = account.quotaRemaining ?? 1_000_000;
     const limit = account.quotaLimit ?? 1_000_000;
-
-    return {
-      success: true,
-      quota: { limit, remaining, used: limit - remaining, resetAt: null },
-    };
+    return { success: true, quota: { limit, remaining, used: limit - remaining, resetAt: null } };
   }
 
   override async healthCheck(account: Account): Promise<ProviderHealthResult> {
     const auth = await getValidAccessToken(account);
-    if (!auth) {
-      return { kind: "auth_error", success: false, error: "Failed to refresh access token" };
-    }
+    if (!auth) return { kind: "auth_error", success: false, error: "Failed to refresh access token" };
     const { accessToken, newTokens } = auth;
 
     const creds = newTokens ? newTokens : getCredentials(account);
     const projectId = creds?.project_id || "default";
 
-    // Send a minimal test request
     try {
       const endpoint = ANTIGRAVITY_ENDPOINTS[0] || "https://daily-cloudcode-pa.sandbox.googleapis.com";
-      const url = buildGeminiUrl(endpoint, projectId, "gemini-3-flash", false);
-      const headers = getHeaders(accessToken, "gemini-3-flash");
+      const url = `${endpoint}/v1internal:generateContent`;
+      const headers = buildHeaders(accessToken, "gemini-3-flash");
       const body = JSON.stringify({
         project: projectId,
         model: "gemini-3-flash",
@@ -910,11 +1399,7 @@ export class AntigravityProvider extends BaseProvider {
         },
       });
 
-      const response = await this.fetchWithTimeout(url, {
-        method: "POST",
-        headers,
-        body,
-      });
+      const response = await this.fetchWithTimeout(url, { method: "POST", headers, body });
 
       if (response.ok) {
         return {

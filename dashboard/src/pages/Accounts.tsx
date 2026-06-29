@@ -45,8 +45,7 @@ import {
   addMimoAccount,
   deleteMimoAccount,
   testMimoAccount,
-  bulkLoginMimo,
-} from "@/lib/api";
+  bulkLoginMimo, } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { JoinTeamModal } from "@/components/canva/JoinTeamModal";
 
@@ -71,7 +70,7 @@ function labelProvider(provider: string) {
   if (provider === "mimo") return "MiMo";
   if (provider === "alibaba") return "Alibaba";
   if (provider === "antigravity") return "Antigravity";
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
+    return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 export default function Accounts() {

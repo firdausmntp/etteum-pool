@@ -35,7 +35,7 @@ const providerColors: Record<string, string> = {
   alibaba: "bg-[var(--info)]/15 text-[var(--info)] border-[var(--info)]/30",
   antigravity: "bg-[var(--warning)]/15 text-[var(--warning)] border-[var(--warning)]/30",
   byok: "bg-[var(--secondary)]/30 text-[var(--foreground)] border-[var(--border)]",
-};
+  };
 
 function formatNumber(n: number | undefined): string {
   if (!n) return "-";
@@ -104,7 +104,7 @@ export default function Models() {
   const [customModelForm, setCustomModelForm] = useState({
     modelId: "",
     ownedBy: "antigravity",
-    contextWindow: 200000,
+    contextWindow: 500000,
     maxOutput: 65536,
     thinking: false,
     vision: false,
@@ -138,7 +138,7 @@ export default function Models() {
     setCustomModelForm({
       modelId: "",
       ownedBy: "antigravity",
-      contextWindow: 200000,
+      contextWindow: 500000,
       maxOutput: 65536,
       thinking: false,
       vision: false,
@@ -514,20 +514,41 @@ export default function Models() {
                       )}
                     </td>
 
-                    {/* Copy Button */}
+                    {/* Copy + Configure Buttons */}
                     <td className="py-3 px-4">
-                      <button
-                        type="button"
-                        onClick={() => copyModelId(model.id)}
-                        title={`Copy model ID: ${model.id}`}
-                        className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group"
-                      >
-                        {copiedModel === model.id ? (
-                          <Check className="w-4 h-4 text-[var(--success)]" />
-                        ) : (
-                          <Copy className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
-                        )}
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingCustomModel(null);
+                            setCustomModelForm({
+                              modelId: model.id,
+                              ownedBy: model.owned_by,
+                              contextWindow: model.context_window ?? 200000,
+                              maxOutput: model.max_output ?? 65536,
+                              thinking: model.thinking ?? false,
+                              vision: model.vision ?? false,
+                            });
+                            setCustomModelDialogOpen(true);
+                          }}
+                          title={`Override settings for ${model.id}`}
+                          className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group"
+                        >
+                          <Pencil className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyModelId(model.id)}
+                          title={`Copy model ID: ${model.id}`}
+                          className="p-1.5 rounded-md hover:bg-[var(--secondary)] transition-colors group"
+                        >
+                          {copiedModel === model.id ? (
+                            <Check className="w-4 h-4 text-[var(--success)]" />
+                          ) : (
+                            <Copy className="w-4 h-4 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -751,7 +772,7 @@ export default function Models() {
                 <option value="qoder">qoder</option>
                 <option value="mimo">mimo</option>
                 <option value="alibaba">alibaba</option>
-              </select>
+                </select>
             </div>
 
             <div className="space-y-1">

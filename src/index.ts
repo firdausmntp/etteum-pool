@@ -18,6 +18,7 @@ import { loadFilterCache } from "./proxy/filter-cache";
 import { ensureModelMappingTable, seedModelMappings, loadModelMappingCache } from "./proxy/model-mapping";
 import { refreshByokModels, loadCustomModelsCache } from "./proxy/providers/registry";
 import { combosRouter } from "./api/model-combos";
+import { customModelsRouter } from "./api/custom-models";
 
 // Run database migrations on startup
 await runMigrations();
@@ -193,6 +194,7 @@ app.route("/api", apiRouter); // /api/accounts, /api/settings, /api/stats
 app.route("/api/auth", authRouter); // /api/auth/login, /api/auth/queue
 app.route("/api/relay", relayApiRouter); // /api/relay/* (management)
 app.route("/api/model-combos", combosRouter); // /api/model-combos (combo chains)
+app.route("/api/custom-models", customModelsRouter); // /api/custom-models (custom model CRUD)
 app.route("/relay", relayProxyRouter); // /relay/:tunnelId/* (tunnel HTTP proxy)
 
 // Health/info endpoint (moved from / to /api/health)

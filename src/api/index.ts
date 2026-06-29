@@ -26,6 +26,7 @@ apiRouter.route("/bin", binApi);
 apiRouter.route("/integration", integrationRouter);
 apiRouter.route("/oauth", oauthRouter);
 apiRouter.route("/custom-models", customModelsRouter);
+apiRouter.route("/models", customModelsRouter);
 
 apiRouter.get("/providers", (c) => {
   return c.json({ data: ["kiro", "kiro-pro", "codebuddy", "canva", "codex", "qoder"] });
